@@ -35,6 +35,8 @@ const STATEMENTS = [
      taker_fee_bps double precision NOT NULL DEFAULT 2,
      reduce_only boolean NOT NULL DEFAULT true,
      ioc_orders boolean NOT NULL DEFAULT true,
+     maker_close boolean NOT NULL DEFAULT false,
+     maker_close_wait_ticks integer NOT NULL DEFAULT 3,
      exit_spread_bps double precision NOT NULL DEFAULT 1,
      max_hold_ticks integer NOT NULL DEFAULT 20,
      auto_execute boolean NOT NULL DEFAULT true,
@@ -93,6 +95,7 @@ const STATEMENTS = [
      pre_sell_pos double precision,
      buy_ack text,
      sell_ack text,
+     exit_ticks integer NOT NULL DEFAULT 0,
      created_at timestamp DEFAULT now(),
      updated_at timestamp DEFAULT now(),
      closed_at timestamp
@@ -105,6 +108,8 @@ const STATEMENTS = [
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS background_enabled boolean NOT NULL DEFAULT true`,
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS min_depth_ratio double precision NOT NULL DEFAULT 1`,
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS taker_fee_bps double precision NOT NULL DEFAULT 2`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS maker_close boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS maker_close_wait_ticks integer NOT NULL DEFAULT 3`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS exec_mode text NOT NULL DEFAULT 'sim'`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS buy_market_index integer`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS sell_market_index integer`,
@@ -112,6 +117,7 @@ const STATEMENTS = [
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS pre_sell_pos double precision`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS buy_ack text`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS sell_ack text`,
+  `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS exit_ticks integer NOT NULL DEFAULT 0`,
 
   // Ensure the single settings row exists.
   `INSERT INTO arb_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,

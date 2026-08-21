@@ -45,12 +45,13 @@ async function health() {
   return call('/health', { timeoutMs: 6000 })
 }
 
-// 下一条 IOC 订单（吃单）。venue: 'lighter'|'rblighter'，side: 'buy'|'sell'。
+// 下一条订单。venue: 'lighter'|'rblighter'，side: 'buy'|'sell'。
+// tif: 'ioc'(默认,吃单) | 'post_only'(maker挂单,0手续费) | 'gtt'。
 // size/price 传人类可读浮点，边车按市场精度缩放成整数。
-async function placeOrder({ venue, market_index, side, size, price, reduce_only = false, client_order_index = 0 }) {
+async function placeOrder({ venue, market_index, side, size, price, reduce_only = false, client_order_index = 0, tif = 'ioc' }) {
   return call('/order', {
     method: 'POST',
-    body: { venue, market_index, side, size, price, reduce_only, client_order_index },
+    body: { venue, market_index, side, size, price, reduce_only, client_order_index, tif },
     timeoutMs: 15000,
   })
 }

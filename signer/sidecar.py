@@ -287,6 +287,7 @@ async def handle_order(request):
         side = str(body.get("side", "buy")).lower()
         reduce_only = bool(body.get("reduce_only", False))
         client_order_index = int(body.get("client_order_index", 0))
+        tif = str(body.get("tif", "ioc")).lower()
     except Exception as e:  # noqa
         log.warning("[order 400] bad params: %s body=%r", e, body)
         return web.json_response({"ok": False, "error": f"bad params: {e}"}, status=400)
@@ -310,6 +311,20 @@ async def handle_order(request):
     is_ask = side in ("sell", "ask", "short")
     c = v.client
 
+    # tif -> (time_in_force, order_expiry)
+    #   ioc:       立即成交剩余取消（吃单），expiry=0
+    #   post_only: 只做 maker 挂单，若会立即成交则被拒（0 手续费平仓用），28天到期
+    #   gtt:       挂到成交或到期
+    if tif in ("post_only", "postonly", "maker", "post"):
+        tif_val = getattr(c, "ORDER_TIME_IN_FORCE_POST_ONLY", 2)
+        expiry_val = getattr(c, "DEFAULT_28_DAY_ORDER_EXPIRY", -1)
+    elif tif in ("gtt", "gtc"):
+        tif_val = getattr(c, "ORDER_TIME_IN_FORCE_GOOD_TILL_TIME", 1)
+        expiry_val = getattr(c, "DEFAULT_28_DAY_ORDER_EXPIRY", -1)
+    else:
+        tif_val = c.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
+        expiry_val = 0
+
     # DRY_RUN：只签名不发送
     if DRY_RUN:
         try:
@@ -320,9 +335,9 @@ async def handle_order(request):
                 price=price_int,
                 is_ask=is_ask,
                 order_type=c.ORDER_TYPE_LIMIT,
-                time_in_force=c.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+                time_in_force=tif_val,
                 reduce_only=reduce_only,
-                order_expiry=0,  # IOC 必须为 0
+                order_expiry=expiry_val,
             )
             err = result[3] if isinstance(result, (list, tuple)) and len(result) >= 4 else None
             return web.json_response({
@@ -345,9 +360,9 @@ async def handle_order(request):
             price=price_int,
             is_ask=is_ask,
             order_type=c.ORDER_TYPE_LIMIT,
-            time_in_force=c.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+            time_in_force=tif_val,
             reduce_only=reduce_only,
-            order_expiry=0,
+            order_expiry=expiry_val,
         )
         # resp 是 RespSendTx（可能是 pydantic 模型），逐字段安全取值
         def g(o, k):

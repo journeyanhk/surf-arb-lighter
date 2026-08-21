@@ -35,6 +35,8 @@ const DEFAULTS = {
   taker_fee_bps: 2,
   reduce_only: true,
   ioc_orders: true,
+  maker_close: false,
+  maker_close_wait_ticks: 3,
   exit_spread_bps: 1,
   max_hold_ticks: 20,
   auto_execute: true,
@@ -55,6 +57,7 @@ const NUMERIC_MIN = {
   taker_fee_bps: 0, // 单边 taker 手续费；用于 PnL 计算，允许 0
   exit_spread_bps: 0,
   max_hold_ticks: 1,
+  maker_close_wait_ticks: 1, // 至少等 1 个 tick 再回退 taker
   scan_interval_sec: 3,
   scan_market_limit: 1,
 }

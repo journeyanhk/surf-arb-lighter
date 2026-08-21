@@ -282,6 +282,7 @@ async function reconcileLive(t, row, s, set) {
 }
 
 async function exitLive(t, row, s, set) {
+  if (s.maker_close) return exitLiveMaker(t, row, s, set)
   const buyV = venueTag(t.buy_venue)
   const sellV = venueTag(t.sell_venue)
   const buf = crossBuffer(s)
@@ -289,13 +290,82 @@ async function exitLive(t, row, s, set) {
   const closeSellPx = (bookPrice(row, t.buy_venue, 'bid') || t.buy_price) * (1 - buf)
   const closeBuyPx = (bookPrice(row, t.sell_venue, 'ask') || t.sell_price) * (1 + buf)
   await Promise.all([
-    sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: t.matched_size, price: closeSellPx, reduce_only: true, client_order_index: t.id * 10 + 5 }),
-    sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: t.matched_size, price: closeBuyPx, reduce_only: true, client_order_index: t.id * 10 + 6 }),
+    sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: t.matched_size, price: closeSellPx, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 5 }),
+    sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: t.matched_size, price: closeBuyPx, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 6 }),
   ])
-  const { pnl, note } = realizedPnl(t, s)
+  const { pnl, note } = realizedPnl(t, s, true)
   await set(`state='CLOSED', pnl_usd=$1, closed_at=now(), note=$2`, [
     pnl,
     `已提交实盘 reduce-only 双腿平仓：${note}`,
+  ])
+}
+
+// Maker close-out: rest reduce-only POST-ONLY orders at the passive touch on each
+// EXITING tick and watch real positions unwind. Post-only pays 0 maker fee. If the
+// remainder hasn't filled within maker_close_wait_ticks, cross it with taker IOC so
+// we never sit half-open indefinitely. reduce_only can't flip a position, so any
+// leftover resting orders become harmless no-ops once flat.
+async function exitLiveMaker(t, row, s, set) {
+  const buyV = venueTag(t.buy_venue)
+  const sellV = venueTag(t.sell_venue)
+  const [pbuy, psell] = await Promise.all([sidecar.positions(buyV), sidecar.positions(sellV)])
+  if (!pbuy || !psell) {
+    await set(`state='PAUSED', note=$1`, ['maker 平仓对账失败：无法读取持仓，已暂停待人工检查'])
+    return
+  }
+  const remLong = Math.max(0, (pbuy[t.buy_market_index] || 0) - (t.pre_buy_pos || 0))
+  const remShort = Math.max(0, (t.pre_sell_pos || 0) - (psell[t.sell_market_index] || 0))
+  const ticks = (t.exit_ticks || 0) + 1
+
+  // Both legs unwound -> fully closed at maker (0 fee).
+  if (remLong <= eps && remShort <= eps) {
+    const { pnl, note } = realizedPnl(t, s, false)
+    await set(`state='CLOSED', exit_ticks=$1, pnl_usd=$2, closed_at=now(), note=$3`, [
+      ticks,
+      pnl,
+      `maker 挂单平仓全部成交：${note}`,
+    ])
+    return
+  }
+
+  const deadline = Math.max(1, Number(s.maker_close_wait_ticks) || 3)
+  if (ticks >= deadline) {
+    // Deadline hit: cross the remainder with taker IOC to close out for sure.
+    const buf = crossBuffer(s)
+    const jobs = []
+    if (remLong > eps) {
+      const px = (bookPrice(row, t.buy_venue, 'bid') || t.buy_price) * (1 - buf)
+      jobs.push(sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: remLong, price: px, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 5 }))
+    }
+    if (remShort > eps) {
+      const px = (bookPrice(row, t.sell_venue, 'ask') || t.sell_price) * (1 + buf)
+      jobs.push(sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: remShort, price: px, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 6 }))
+    }
+    await Promise.all(jobs)
+    const { pnl, note } = realizedPnl(t, s, true)
+    await set(`state='CLOSED', exit_ticks=$1, pnl_usd=$2, closed_at=now(), note=$3`, [
+      ticks,
+      pnl,
+      `maker 平仓超时(${ticks} ticks)，剩余以 taker 补平：${note}`,
+    ])
+    return
+  }
+
+  // (Re)post passive reduce-only maker orders at the touch for whatever remains.
+  // Sell the long at the ask, buy back the short at the bid — neither crosses.
+  const jobs = []
+  if (remLong > eps) {
+    const px = bookPrice(row, t.buy_venue, 'ask') || t.buy_price
+    jobs.push(sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: remLong, price: px, reduce_only: true, tif: 'post_only', client_order_index: t.id * 10000 + ticks * 10 + 1 }))
+  }
+  if (remShort > eps) {
+    const px = bookPrice(row, t.sell_venue, 'bid') || t.sell_price
+    jobs.push(sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: remShort, price: px, reduce_only: true, tif: 'post_only', client_order_index: t.id * 10000 + ticks * 10 + 2 }))
+  }
+  await Promise.all(jobs)
+  await set(`exit_ticks=$1, note=$2`, [
+    ticks,
+    `maker 挂单平仓中(${ticks}/${deadline})：待成交 多 ${remLong.toFixed(6)} / 空 ${remShort.toFixed(6)}`,
   ])
 }
 
@@ -348,15 +418,17 @@ function fmt(n) {
 
 // Realistic realized-PnL estimate.
 //   gross convergence capture = entry_spread − exit_spread   (bps on notional)
-//   minus round-trip taker fees = 4 × taker_fee_bps
-//     (open buy + open sell + close sell + close buy — every IOC leg pays taker)
+//   minus fees:
+//     open  = 2 × taker_fee_bps  (both open legs are IOC takers — always)
+//     close = 2 × taker_fee_bps if taker IOC, else 0 (maker post-only, 0 fee)
 // Still an ESTIMATE from intended spreads, not authed fills.
-function realizedPnl(t, s) {
+function realizedPnl(t, s, closeTaker = !s.maker_close) {
   const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
   const grossBps = (Number(t.entry_spread_bps) || 0) - (Number(t.exit_spread_bps) || 0)
-  const feeBps = 4 * (Number(s.taker_fee_bps) || 0)
+  const takerFee = Number(s.taker_fee_bps) || 0
+  const feeBps = takerFee * 2 + (closeTaker ? takerFee * 2 : 0)
   const netBps = grossBps - feeBps
-  const note = `名义 ${notional.toFixed(2)} USD，净 ${fmt(netBps)}bps（毛 ${fmt(grossBps)} − 手续费 ${fmt(feeBps)}）`
+  const note = `名义 ${notional.toFixed(2)} USD，净 ${fmt(netBps)}bps（毛 ${fmt(grossBps)} − 手续费 ${fmt(feeBps)}${closeTaker ? '' : '，maker平仓0费'}）`
   return { pnl: (notional * netBps) / 10000, note }
 }
 
