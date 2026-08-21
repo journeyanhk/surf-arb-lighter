@@ -475,7 +475,13 @@ function Settings() {
         <button
           onClick={() => {
             const payload: Record<string, any> = { ...form }
-            for (const g of FIELD_GROUPS) for (const f of g.fields) if (f.type === 'num' && f.key in payload) payload[f.key] = parseFloat(payload[f.key])
+            for (const g of FIELD_GROUPS)
+              for (const f of g.fields)
+                if (f.type === 'num' && f.key in payload) {
+                  const n = parseFloat(payload[f.key])
+                  if (Number.isFinite(n)) payload[f.key] = n
+                  else delete payload[f.key] // 空/非法数字不提交，避免写入 null 导致下单量为 0
+                }
             mut.mutate(payload)
           }}
           disabled={mut.isPending}

@@ -82,7 +82,15 @@ function currentNetBps(task, row, s) {
 async function openTask(r, s) {
   const price = r.best.buy_price
   if (!Number.isFinite(price) || price <= 0) return
-  const size = (s.order_notional_usd || 0) / price
+  const notional = Number(s.order_notional_usd)
+  if (!Number.isFinite(notional) || notional <= 0) {
+    // Misconfigured notional would produce a 0-size order the venue rejects.
+    // Skip silently rather than spawn a task that's guaranteed to fail.
+    console.warn(`[engine] 跳过开仓 ${r.symbol}：单笔名义金额无效 (order_notional_usd=${s.order_notional_usd})`)
+    return
+  }
+  const size = notional / price
+  if (!Number.isFinite(size) || size <= 0) return
   const buyIdx = marketIndexFor(r, r.best.buy_venue)
   const sellIdx = marketIndexFor(r, r.best.sell_venue)
   const live = liveEnabled(s) && Number.isFinite(buyIdx) && Number.isFinite(sellIdx)

@@ -42,6 +42,19 @@ const DEFAULTS = {
   proxy_url: '',
 }
 
+// Numeric fields and their minimum accepted value. Guards against a blank/NaN
+// input being stored as null/0 — which would make the live order size 0.
+const NUMERIC_MIN = {
+  spread_threshold_bps: 0,
+  min_samples: 1,
+  max_slippage_bps: 0,
+  order_notional_usd: 1, // never allow 0 — that produces a 0-size order
+  exit_spread_bps: 0,
+  max_hold_ticks: 1,
+  scan_interval_sec: 3,
+  scan_market_limit: 1,
+}
+
 async function ensureRow() {
   const { rows } = await dbQuery('SELECT * FROM arb_settings WHERE id = 1')
   if (rows.length) return rows[0]
@@ -84,6 +97,16 @@ router.put('/', async (req, res) => {
       let value = body[key]
       // Secret fields: empty string means "leave unchanged".
       if (SECRET_FIELDS.includes(key) && (value === '' || value == null)) continue
+      // Numeric fields: reject blank/NaN/out-of-range so we never store null/0.
+      if (key in NUMERIC_MIN) {
+        const n = typeof value === 'number' ? value : parseFloat(value)
+        if (!Number.isFinite(n) || n < NUMERIC_MIN[key]) {
+          return res.status(400).json({
+            error: `字段 ${key} 需要 ≥ ${NUMERIC_MIN[key]} 的有效数字（收到 ${JSON.stringify(value)}）`,
+          })
+        }
+        value = n
+      }
       cols.push(`${key} = $${i++}`)
       vals.push(value)
     }
