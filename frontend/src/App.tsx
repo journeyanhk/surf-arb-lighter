@@ -378,6 +378,7 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
       { key: 'max_slippage_bps', label: '最大滑点 (bps)', type: 'num' },
       { key: 'order_notional_usd', label: '单笔名义金额 (USD)', type: 'num' },
       { key: 'min_depth_ratio', label: '最小深度倍数（盘口量÷下单量，实盘生效）', type: 'num' },
+      { key: 'taker_fee_bps', label: '单边 taker 手续费 (bps，用于盈亏计算)', type: 'num' },
       { key: 'exit_spread_bps', label: '平仓收敛阈值 (bps)', type: 'num' },
       { key: 'max_hold_ticks', label: '最大持仓 tick 数', type: 'num' },
       { key: 'reduce_only', label: 'Reduce-Only 风控', type: 'bool' },

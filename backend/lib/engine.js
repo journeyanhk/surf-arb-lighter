@@ -161,12 +161,8 @@ async function advanceSim(t, row, s, set) {
     return
   }
   if (t.state === 'EXITING') {
-    const notional = t.matched_size * t.buy_price
-    const pnl = (notional * t.entry_spread_bps) / 10000
-    await set(`state='CLOSED', pnl_usd=$1, closed_at=now(), note=$2`, [
-      pnl,
-      `已平仓：撮合名义 ${notional.toFixed(2)} USD，锁定 ${fmt(t.entry_spread_bps)}bps`,
-    ])
+    const { pnl, note } = realizedPnl(t, s)
+    await set(`state='CLOSED', pnl_usd=$1, closed_at=now(), note=$2`, [pnl, `已平仓：${note}`])
     return
   }
 }
@@ -296,11 +292,10 @@ async function exitLive(t, row, s, set) {
     sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: t.matched_size, price: closeSellPx, reduce_only: true, client_order_index: t.id * 10 + 5 }),
     sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: t.matched_size, price: closeBuyPx, reduce_only: true, client_order_index: t.id * 10 + 6 }),
   ])
-  const notional = t.matched_size * t.buy_price
-  const pnl = (notional * t.entry_spread_bps) / 10000
+  const { pnl, note } = realizedPnl(t, s)
   await set(`state='CLOSED', pnl_usd=$1, closed_at=now(), note=$2`, [
     pnl,
-    `已提交实盘 reduce-only 双腿平仓：名义 ${notional.toFixed(2)} USD，锁定 ${fmt(t.entry_spread_bps)}bps`,
+    `已提交实盘 reduce-only 双腿平仓：${note}`,
   ])
 }
 
@@ -349,6 +344,20 @@ async function holding(t, row, s, set) {
 
 function fmt(n) {
   return Number.isFinite(n) ? n.toFixed(1) : '-'
+}
+
+// Realistic realized-PnL estimate.
+//   gross convergence capture = entry_spread − exit_spread   (bps on notional)
+//   minus round-trip taker fees = 4 × taker_fee_bps
+//     (open buy + open sell + close sell + close buy — every IOC leg pays taker)
+// Still an ESTIMATE from intended spreads, not authed fills.
+function realizedPnl(t, s) {
+  const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
+  const grossBps = (Number(t.entry_spread_bps) || 0) - (Number(t.exit_spread_bps) || 0)
+  const feeBps = 4 * (Number(s.taker_fee_bps) || 0)
+  const netBps = grossBps - feeBps
+  const note = `名义 ${notional.toFixed(2)} USD，净 ${fmt(netBps)}bps（毛 ${fmt(grossBps)} − 手续费 ${fmt(feeBps)}）`
+  return { pnl: (notional * netBps) / 10000, note }
 }
 
 async function advance(t, row, s) {

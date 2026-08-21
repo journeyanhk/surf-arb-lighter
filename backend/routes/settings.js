@@ -32,6 +32,7 @@ const DEFAULTS = {
   max_slippage_bps: 3,
   order_notional_usd: 50,
   min_depth_ratio: 1,
+  taker_fee_bps: 2,
   reduce_only: true,
   ioc_orders: true,
   exit_spread_bps: 1,
@@ -51,6 +52,7 @@ const NUMERIC_MIN = {
   max_slippage_bps: 0,
   order_notional_usd: 1, // never allow 0 — that produces a 0-size order
   min_depth_ratio: 0.1, // 盘口深度需 ≥ 下单量 × 此比例才实盘开仓
+  taker_fee_bps: 0, // 单边 taker 手续费；用于 PnL 计算，允许 0
   exit_spread_bps: 0,
   max_hold_ticks: 1,
   scan_interval_sec: 3,
