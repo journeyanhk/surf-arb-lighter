@@ -464,11 +464,44 @@ function Settings() {
   const val = (k: string) => (k in form ? form[k] : data?.[k])
   const set = (k: string, v: any) => setForm((f) => ({ ...f, [k]: v }))
 
+  // 稳健推荐：只做流动性好的深盘口币，门槛留足缓冲，杜绝小盘薄盘口滑点。
+  // 载入后只写入表单，用户可再改，确认后再点“保存设置”才会生效。
+  const STABLE_PRESET: Record<string, any> = {
+    scan_symbols: 'SOL,ETH,BTC', // 只扫这三个深盘口币，彻底剔除小盘
+    focus_symbol: '', // 三个都可开，靠“同时最多持有仓位数=1”控制单仓
+    max_concurrent_tasks: 1,
+    min_depth_ratio: 5, // 盘口量需 ≥ 5× 下单量，撑不住就不开
+    spread_threshold_bps: 8, // 入场门槛抬高：只吃明显价差
+    exit_spread_bps: 1, // 平仓收敛阈值压低：与入场留出 ~7bps 缓冲
+    max_slippage_bps: 3,
+    min_samples: 15, // 白名单后每轮 1-2s，样本很快满
+    max_hold_ticks: 25,
+    maker_close: true, // 挂单平仓，不吃对手价，少一份滑点
+    maker_open: false, // 开仓仍用 taker，确保出现价差时真能建到仓
+    order_notional_usd: 50,
+  }
+  const loadPreset = () => {
+    setForm((f) => ({ ...f, ...STABLE_PRESET }))
+  }
+
   return (
     <div className="space-y-5 max-w-3xl">
       <p className="text-[13px] text-[#888]">
         账户凭据与策略配置保存在本地数据库。API 私钥保存后不会回显，重新填写才会覆盖。
       </p>
+      <div className="flex items-center justify-between gap-3 flex-wrap bg-[#f0fdf4] border border-[#bbf7d0] rounded-lg px-4 py-3">
+        <div className="text-[13px] text-[#166534]">
+          <div className="font-medium">稳健推荐配置（SOL / ETH / BTC · 深盘口 · 门槛留缓冲）</div>
+          <div className="text-[#3f7a52] mt-0.5">只做流动性好的币、门槛抬高只吃明显价差，杜绝小盘薄盘口滑点。点击仅填入表单，你可再改，确认后再点「保存设置」才生效。</div>
+        </div>
+        <button
+          type="button"
+          onClick={loadPreset}
+          className="px-4 py-2 rounded-md bg-[#16a34a] text-white text-[13px] font-medium whitespace-nowrap hover:bg-[#15803d]"
+        >
+          载入稳健推荐
+        </button>
+      </div>
       {FIELD_GROUPS.map((g) => (
         <Card key={g.title} title={g.title} subtitle={g.note}>
           <div className="grid md:grid-cols-2 gap-4">
