@@ -24,6 +24,8 @@
 #   SIDECAR_MAX_NOTIONAL_USD    默认 100，单笔名义额上限
 #   LIGHTER_BASE_URL / LIGHTER_ACCOUNT_INDEX / LIGHTER_API_KEY_INDEX / LIGHTER_API_PRIVATE_KEY [/ LIGHTER_CHAIN_ID]
 #   RBLIGHTER_BASE_URL / RBLIGHTER_ACCOUNT_INDEX / RBLIGHTER_API_KEY_INDEX / RBLIGHTER_API_PRIVATE_KEY [/ RBLIGHTER_CHAIN_ID]
+#   LIGHTER_LEVERAGE / LIGHTER_MARGIN_MODE        默认 5 / cross（首次遇到 21613 时用于设置该市场保证金模式）
+#   RBLIGHTER_LEVERAGE / RBLIGHTER_MARGIN_MODE    默认 5 / cross
 
 import os
 import sys
@@ -74,6 +76,11 @@ class Venue:
         self.ready = False
         self.err = None
         self.markets = {}           # market_id -> {size_decimals, price_decimals, min_base_amount}
+        # 保证金模式 / 杠杆：某些市场首次下单前必须先设置，否则报 21613 invalid margin mode。
+        prefix = name.upper()       # Lighter->LIGHTER, RBLighter->RBLIGHTER
+        self.leverage = int(env(f"{prefix}_LEVERAGE", "5") or 5)
+        self.margin_mode_name = (env(f"{prefix}_MARGIN_MODE", "cross") or "cross").lower()
+        self._margin_ready = set()  # market_id 已成功设置过保证金模式的集合
 
     @property
     def configured(self):
@@ -142,6 +149,32 @@ class Venue:
         if base_int <= 0 or price_int <= 0:
             raise ValueError(f"缩放后非正数 base={base_int} price={price_int}")
         return base_int, price_int, meta
+
+    def _margin_mode_int(self):
+        """cross=0 / isolated=1，优先用 SDK 常量。"""
+        if self.margin_mode_name.startswith("iso"):
+            return getattr(lighter.SignerClient, "ISOLATED_MARGIN_MODE", 1)
+        return getattr(lighter.SignerClient, "CROSS_MARGIN_MODE", 0)
+
+    async def ensure_margin(self, market_index):
+        """为某市场设置保证金模式+杠杆（首次下单前需要，解决 21613 invalid margin mode）。
+        返回 None 表示成功；返回错误对象表示失败。成功后缓存，避免重复设置。"""
+        mid = int(market_index)
+        if mid in self._margin_ready:
+            return None
+        try:
+            res = await self.client.update_leverage(mid, self._margin_mode_int(), self.leverage)
+            err = res[-1] if isinstance(res, (list, tuple)) and len(res) else None
+            if err is None:
+                self._margin_ready.add(mid)
+                log.info("%s: 市场 %s 保证金模式=%s 杠杆=%sx 已设置",
+                         self.name, mid, self.margin_mode_name, self.leverage)
+            else:
+                log.warning("%s: 市场 %s 设置保证金模式失败: %s", self.name, mid, err)
+            return err
+        except Exception as e:  # noqa
+            log.warning("%s: 市场 %s update_leverage 异常: %s", self.name, mid, e)
+            return e
 
     async def positions(self):
         """查真实持仓（公开账户接口，用于对账）。返回 {market_id: signed_size}。"""
@@ -337,8 +370,17 @@ async def handle_order(request):
     # 注意：create_order 返回 (CreateOrder, RespSendTx, err)。err=None 只代表
     # “交易已被定序器接收”，并【不代表已成交】——IOC 是否撮合成功要靠随后的持仓/
     # 成交查询确认。这里把定序器的返回码/tx_hash 记录下来，便于事后追踪。
-    try:
-        _tx, resp, err = await c.create_order(
+    def g(o, k):
+        try:
+            return getattr(o, k)
+        except Exception:  # noqa
+            try:
+                return o.get(k)
+            except Exception:  # noqa
+                return None
+
+    async def _submit():
+        return await c.create_order(
             market_index=market_index,
             client_order_index=client_order_index,
             base_amount=base_int,
@@ -349,15 +391,19 @@ async def handle_order(request):
             reduce_only=reduce_only,
             order_expiry=0,
         )
-        # resp 是 RespSendTx（可能是 pydantic 模型），逐字段安全取值
-        def g(o, k):
-            try:
-                return getattr(o, k)
-            except Exception:  # noqa
-                try:
-                    return o.get(k)
-                except Exception:  # noqa
-                    return None
+
+    def _is_margin_err(e):
+        s = str(e or "").lower()
+        return "21613" in s or "invalid margin mode" in s
+
+    try:
+        _tx, resp, err = await _submit()
+        # 21613 invalid margin mode：该市场尚未设置保证金模式/杠杆。设置后重试一次。
+        if err is not None and _is_margin_err(err):
+            log.info("[order] %s 市场 %s 报 invalid margin mode，尝试设置保证金模式后重试", vk, market_index)
+            lev_err = await v.ensure_margin(market_index)
+            if lev_err is None:
+                _tx, resp, err = await _submit()
         code = g(resp, "code")
         message = g(resp, "message")
         txh = g(resp, "tx_hash")
