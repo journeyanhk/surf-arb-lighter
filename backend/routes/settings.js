@@ -31,6 +31,7 @@ const DEFAULTS = {
   min_samples: 30,
   max_slippage_bps: 3,
   order_notional_usd: 50,
+  min_depth_ratio: 1,
   reduce_only: true,
   ioc_orders: true,
   exit_spread_bps: 1,
@@ -49,6 +50,7 @@ const NUMERIC_MIN = {
   min_samples: 1,
   max_slippage_bps: 0,
   order_notional_usd: 1, // never allow 0 — that produces a 0-size order
+  min_depth_ratio: 0.1, // 盘口深度需 ≥ 下单量 × 此比例才实盘开仓
   exit_spread_bps: 0,
   max_hold_ticks: 1,
   scan_interval_sec: 3,

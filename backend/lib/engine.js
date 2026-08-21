@@ -95,6 +95,21 @@ async function openTask(r, s) {
   const sellIdx = marketIndexFor(r, r.best.sell_venue)
   const live = liveEnabled(s) && Number.isFinite(buyIdx) && Number.isFinite(sellIdx)
   const execMode = live ? 'live' : 'sim'
+
+  // Depth guard (live only): if either leg's resting size near the touch can't
+  // cover our order, an IOC would fill little/nothing and the task voids. Skip
+  // opening so we don't churn on thin books. Sim mode is unaffected (demo).
+  if (live) {
+    const buyDepth = Number(r.best.buy_depth_base)
+    const sellDepth = Number(r.best.sell_depth_base)
+    const need = size * (Number(s.min_depth_ratio) > 0 ? Number(s.min_depth_ratio) : 1)
+    if (!Number.isFinite(buyDepth) || !Number.isFinite(sellDepth) || buyDepth < need || sellDepth < need) {
+      console.warn(
+        `[engine] 跳过实盘开仓 ${r.symbol}：盘口深度不足（需 ${need.toFixed(6)}，买腿 ${Number.isFinite(buyDepth) ? buyDepth.toFixed(6) : 'NA'} / 卖腿 ${Number.isFinite(sellDepth) ? sellDepth.toFixed(6) : 'NA'}）`
+      )
+      return
+    }
+  }
   await dbQuery(
     `INSERT INTO arb_tasks
        (symbol, direction, state, buy_venue, sell_venue, buy_price, sell_price,

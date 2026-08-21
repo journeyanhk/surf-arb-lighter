@@ -42,6 +42,7 @@ exports.settings = pgTable('arb_settings', {
   min_samples: integer('min_samples').notNull().default(30),
   max_slippage_bps: doublePrecision('max_slippage_bps').notNull().default(3),
   order_notional_usd: doublePrecision('order_notional_usd').notNull().default(50),
+  min_depth_ratio: doublePrecision('min_depth_ratio').notNull().default(1),
   reduce_only: boolean('reduce_only').notNull().default(true),
   ioc_orders: boolean('ioc_orders').notNull().default(true),
   exit_spread_bps: doublePrecision('exit_spread_bps').notNull().default(1),

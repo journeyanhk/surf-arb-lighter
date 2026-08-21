@@ -82,23 +82,33 @@ async function listOrderBooks(baseUrl, proxyUrl) {
 // so repeated scan ticks don't hammer the venue and trip HTTP 429.
 const tobCache = new Map()
 const TOB_TTL = 6000
+// Aggregate resting base within this many bps of the top of book, so we know
+// how much size an IOC taker can actually fill near the touch (depth guard).
+const DEPTH_BAND_BPS = 10
 
 async function topOfBook(baseUrl, marketId, proxyUrl) {
   const key = `${baseUrl}#${marketId}`
   const hit = tobCache.get(key)
   if (hit && Date.now() - hit.at < TOB_TTL) return hit.val
   const j = await fetchJson(
-    `${baseUrl}/api/v1/orderBookOrders?market_id=${marketId}&limit=1`,
+    `${baseUrl}/api/v1/orderBookOrders?market_id=${marketId}&limit=50`,
     { proxyUrl }
   )
   const asks = (j.asks || [])
-    .map((a) => parseFloat(a.price))
-    .filter((n) => Number.isFinite(n))
+    .map((a) => ({ price: parseFloat(a.price), base: parseFloat(a.remaining_base_amount) }))
+    .filter((o) => Number.isFinite(o.price) && Number.isFinite(o.base))
   const bids = (j.bids || [])
-    .map((b) => parseFloat(b.price))
-    .filter((n) => Number.isFinite(n))
+    .map((b) => ({ price: parseFloat(b.price), base: parseFloat(b.remaining_base_amount) }))
+    .filter((o) => Number.isFinite(o.price) && Number.isFinite(o.base))
   if (!asks.length || !bids.length) return null
-  const val = { bestAsk: Math.min(...asks), bestBid: Math.max(...bids) }
+  const bestAsk = Math.min(...asks.map((a) => a.price))
+  const bestBid = Math.max(...bids.map((b) => b.price))
+  // Depth a taker can sweep within DEPTH_BAND_BPS of the touch.
+  const askCap = bestAsk * (1 + DEPTH_BAND_BPS / 10000)
+  const bidFloor = bestBid * (1 - DEPTH_BAND_BPS / 10000)
+  const askDepthBase = asks.filter((a) => a.price <= askCap).reduce((s, a) => s + a.base, 0)
+  const bidDepthBase = bids.filter((b) => b.price >= bidFloor).reduce((s, b) => s + b.base, 0)
+  const val = { bestAsk, bestBid, askDepthBase, bidDepthBase }
   tobCache.set(key, { at: Date.now(), val })
   return val
 }
@@ -119,6 +129,9 @@ function computeSpread(lighter, rblighter) {
           sell_venue: 'RBLighter',
           buy_price: lighter.bestAsk,
           sell_price: rblighter.bestBid,
+          // depth the taker sweeps: buy leg hits Lighter asks, sell leg hits RB bids
+          buy_depth_base: lighter.askDepthBase,
+          sell_depth_base: rblighter.bidDepthBase,
         }
       : {
           direction: 'buy_rblighter',
@@ -127,6 +140,8 @@ function computeSpread(lighter, rblighter) {
           sell_venue: 'Lighter',
           buy_price: rblighter.bestAsk,
           sell_price: lighter.bestBid,
+          buy_depth_base: rblighter.askDepthBase,
+          sell_depth_base: lighter.bidDepthBase,
         }
   return { buyLighter, buyRblighter, best }
 }
