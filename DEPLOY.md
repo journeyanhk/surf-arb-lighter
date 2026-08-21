@@ -1,7 +1,8 @@
 # VPS 部署 & 实盘上线指南
 
-本项目分三个进程：**前端**（构建后为静态文件）、**Node 后端**（监控 + 套利引擎）、
-**Python 执行边车**（用官方 lighter-sdk 做真实签名下单）。
+本项目跑两个进程：**Node 后端**（监控 + 套利引擎，并托管前端静态页）、
+**Python 执行边车**（用官方 lighter-sdk 做真实签名下单）。前端构建后由后端进程一起托管，
+Caddy 只需反代一个端口。
 
 > ⚠️ 只有当「面板实盘开关全开」**且**「边车以 `SIDECAR_DRY_RUN=false` 运行」时才会下真实单。
 > 任一条件不满足都是安全的模拟/只签名状态。**首次上线务必用极小额（如 10~15 USD）验证。**
@@ -114,16 +115,41 @@ curl -s http://127.0.0.1:3001/api/monitor/sidecar   # configured:true 且 venues
 
 ---
 
-## 4. 构建并托管前端
+## 4. 构建前端（前后端合并为一个服务）
+
+后端进程会**同时托管前端静态页和 API**，所以 Caddy 只要反代到一个端口即可。
 
 ```bash
-cd frontend && bun install && bun run build
-# 产物在 frontend/dist —— 用 nginx/caddy 托管，并把 /api 反代到 127.0.0.1:3001
+# 用绝对根路径构建（BASE_PATH=/ 让前端的 /api 请求打到同源的绝对路径）
+cd frontend && bun install && BASE_PATH=/ bun run build
+# 产物在 frontend/dist —— 后端启动时会自动检测并托管它
 ```
-nginx 片段：
+
+> ⚠️ 一定要带 `BASE_PATH=/`。默认是 `./`（相对路径，工作室里用），合并部署时必须用绝对
+> 根路径，否则子路由刷新会 404。
+
+构建完后**重启后端**（第 3 步那个进程），它会打印 `[web] serving frontend from …/frontend/dist`，
+此时访问 `http://127.0.0.1:3001/` 就能直接看到面板。
+
+### Caddy 配置（推荐，一行反代）
+`/etc/caddy/Caddyfile`：
+```caddy
+yourdomain.com {
+    reverse_proxy 127.0.0.1:3001
+}
+```
+```bash
+sudo systemctl reload caddy
+```
+Caddy 自动签 HTTPS 证书，前端和 `/api/*` 全走这一个反代，无需分开配置。
+
+> 如果暂时没有域名、只想本机/内网访问，把 `yourdomain.com` 换成 `:80` 即可。
+
+### 备选：前后端分开托管（nginx）
+若你更想让 nginx 直接托管静态文件、只反代 API（此时构建同样用 `BASE_PATH=/`）：
 ```nginx
 location /api/ { proxy_pass http://127.0.0.1:3001; }
-location /    { root /root/surf-arb-lighter/frontend/dist; try_files $uri /index.html; }
+location /     { root /root/surf-arb-lighter/frontend/dist; try_files $uri /index.html; }
 ```
 
 ---
