@@ -245,9 +245,11 @@ async def handle_order(request):
 
     vk = venue_key(body.get("venue"))
     if not vk:
+        log.warning("[order 400] unknown venue: %r", body.get("venue"))
         return web.json_response({"ok": False, "error": "unknown venue"}, status=400)
     v = VENUES[vk]
     if not v.ready:
+        log.warning("[order 409] venue %s not ready: %s", vk, v.err)
         return web.json_response({"ok": False, "error": f"venue not ready: {v.err}"}, status=409)
 
     try:
@@ -258,10 +260,13 @@ async def handle_order(request):
         reduce_only = bool(body.get("reduce_only", False))
         client_order_index = int(body.get("client_order_index", 0))
     except Exception as e:  # noqa
+        log.warning("[order 400] bad params: %s body=%r", e, body)
         return web.json_response({"ok": False, "error": f"bad params: {e}"}, status=400)
 
     notional = size * price
     if notional > MAX_NOTIONAL_USD:
+        log.warning("[order 400] %s 名义额 %.4f 超过上限 %.2f (size=%s price=%s market=%s)",
+                    vk, notional, MAX_NOTIONAL_USD, size, price, market_index)
         return web.json_response(
             {"ok": False, "error": f"名义额 {notional:.2f} 超过上限 {MAX_NOTIONAL_USD}"},
             status=400,
@@ -270,6 +275,8 @@ async def handle_order(request):
     try:
         base_int, price_int, meta = v.scale(market_index, size, price)
     except Exception as e:  # noqa
+        log.warning("[order 400] %s scale 失败: %s (size=%s price=%s market=%s)",
+                    vk, e, size, price, market_index)
         return web.json_response({"ok": False, "error": str(e)}, status=400)
 
     is_ask = side in ("sell", "ask", "short")

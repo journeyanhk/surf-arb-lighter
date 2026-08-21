@@ -182,6 +182,24 @@ async function enterLive(t, row, s, set) {
     sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'buy', size: t.size, price: buyPx, reduce_only: false, client_order_index: t.id * 10 + 1 }),
     sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'sell', size: t.size, price: sellPx, reduce_only: false, client_order_index: t.id * 10 + 2 }),
   ])
+  // If BOTH legs were rejected before ever hitting the book (sidecar 400/409:
+  // notional cap, size < min, unknown market, venue not ready…), no position
+  // was opened — surface the REAL reason instead of the misleading "IOC 未撮合".
+  if (!ba.ok && !sa.ok) {
+    const reason = `买腿:${ba.error || 'fail'} ｜ 卖腿:${sa.error || 'fail'}`
+    await set(
+      `state='ERROR', pre_buy_pos=$1, pre_sell_pos=$2, buy_ack=$3, sell_ack=$4, matched_size=0, pnl_usd=0, closed_at=now(), note=$5`,
+      [
+        preBuy,
+        preSell,
+        JSON.stringify(ba).slice(0, 500),
+        JSON.stringify(sa).slice(0, 500),
+        `实盘下单被拒（两腿均未提交成功）：${reason}`.slice(0, 300),
+      ]
+    )
+    return
+  }
+  const legErr = !ba.ok ? `买腿被拒:${ba.error}` : !sa.ok ? `卖腿被拒:${sa.error}` : ''
   await set(
     `state='RECONCILING', pre_buy_pos=$1, pre_sell_pos=$2, buy_ack=$3, sell_ack=$4, note=$5`,
     [
@@ -189,7 +207,8 @@ async function enterLive(t, row, s, set) {
       preSell,
       JSON.stringify(ba).slice(0, 500),
       JSON.stringify(sa).slice(0, 500),
-      `已提交实盘双腿 IOC：买 ${ba.ok ? 'ok' : 'fail'} / 卖 ${sa.ok ? 'ok' : 'fail'}`,
+      (`已提交实盘双腿 IOC：买 ${ba.ok ? 'ok' : 'fail'} / 卖 ${sa.ok ? 'ok' : 'fail'}` +
+        (legErr ? ` ｜ ${legErr}` : '')).slice(0, 300),
     ]
   )
 }
