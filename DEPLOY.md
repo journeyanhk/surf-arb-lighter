@@ -80,29 +80,26 @@ sudo journalctl -u arb-sidecar -f
 ```
 BACKEND_PORT=3001
 SURF_API_KEY=            # 用本地数据库时可留空
-DATABASE_URL=postgres://arb:yourpassword@127.0.0.1:5432/arb
+LOCAL_DB_PATH=./data/arb # 嵌入式数据库（推荐，最省事）
 ARB_SIDECAR_URL=http://127.0.0.1:8787
 ARB_SIDECAR_TOKEN=<与 signer/.env 里 SIDECAR_TOKEN 完全一致>
 ```
 
-> **数据库说明**：本项目数据（设置/任务/采样）存 Postgres。设了 `DATABASE_URL` 就用你
-> VPS 本地的库，**完全自给自足、不依赖 Surf 托管库，`SURF_API_KEY` 可留空**。启动时若看到
-> 一行 “DB schema sync failed / Surf …” 的告警，那是 SDK 在尝试同步它自家的托管库，**无害可忽略**
-> ——你的数据走的是本地库（日志会打印 `[db] using LOCAL Postgres`）。
-
-### 先装本地 Postgres（Ubuntu/Debian 示例）
-```bash
-sudo apt update && sudo apt install -y postgresql
-sudo -u postgres psql -c "CREATE USER arb WITH PASSWORD 'yourpassword';"
-sudo -u postgres psql -c "CREATE DATABASE arb OWNER arb;"
-# 自测连通：
-psql "postgres://arb:yourpassword@127.0.0.1:5432/arb" -c '\dt'
-```
-建表由后端启动时**自动完成**（幂等迁移），无需手动执行 SQL。
+> **数据库说明**：本项目数据（设置/任务/采样）存 Postgres，有三种方式：
+> - **A. 嵌入式（推荐）**：设 `LOCAL_DB_PATH=./data/arb` 即可。用的是 PGlite（进程内
+>   Postgres，WASM），**免安装、免密码、免建库**，数据落在该文件夹。`SURF_API_KEY` 可留空。
+> - **B. 自建 Postgres 服务**：设 `DATABASE_URL=postgres://用户:密码@127.0.0.1:5432/库名`
+>   （设了它会优先）。见文末附录。
+> - **C. 都不设**：使用 Surf 托管库（工作室内默认）。
+>
+> 启动时若看到一行 “DB schema sync failed / Surf …” 的告警，那是 SDK 在尝试同步它自家的
+> 托管库，**无害可忽略** —— 你的数据走本地库（日志会打印 `[db] using EMBEDDED Postgres`
+> 或 `LOCAL Postgres server`）。建表由后端启动时**自动幂等完成**，无需手动执行 SQL。
 
 ### 启动后端
 ```bash
 cd backend && bun install     # 或 npm install
+mkdir -p data                 # 嵌入式方式：确保数据目录存在
 bun run server.js             # 生产可用 systemd/pm2 常驻
 ```
 
@@ -160,3 +157,30 @@ location /    { root /root/surf-arb-lighter/frontend/dist; try_files $uri /index
 - 单腿成交自动 reduce-only 平补，不留裸敞口。
 - 实盘执行任何异常 → 任务置 `PAUSED` 待人工检查，绝不静默继续。
 - **签名永远由官方 SDK 完成，本项目不手写任何签名。**
+
+---
+
+## 附录：改用自建 Postgres 服务（方式 B，可选）
+
+如果你更想用独立的 Postgres 服务而不是嵌入式：
+
+```bash
+sudo apt update && sudo apt install -y postgresql
+sudo -u postgres psql -c "CREATE USER arb WITH PASSWORD 'yourpassword';"
+sudo -u postgres psql -c "CREATE DATABASE arb OWNER arb;"
+```
+然后在 `backend/.env` 设 `DATABASE_URL=postgres://arb:yourpassword@127.0.0.1:5432/arb`
+（它优先于 `LOCAL_DB_PATH`）。
+
+**「password authentication failed」怎么办**：多半是 `pg_hba.conf` 用了 `peer`/`ident`
+认证。改用密码认证：
+```bash
+# 找到配置文件
+sudo -u postgres psql -c 'SHOW hba_file;'
+# 编辑它，把本地 IPv4 行的认证方式改成 md5（或 scram-sha-256）：
+#   host  all  all  127.0.0.1/32   md5
+sudo systemctl restart postgresql
+# 用 TCP 方式连（走 127.0.0.1 而非 unix socket）自测：
+psql "postgres://arb:yourpassword@127.0.0.1:5432/arb" -c '\dt'
+```
+懒得折腾就用嵌入式（方式 A），`LOCAL_DB_PATH=./data/arb` 一行搞定，无需密码。

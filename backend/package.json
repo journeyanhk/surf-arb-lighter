@@ -5,6 +5,7 @@
     "dev": "node scripts/check-env.js node --watch server.js"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.5",
     "@surf-ai/sdk": "1.0.5",
     "express": "4.22.1",
     "pg": "^8.23.0",

@@ -1,11 +1,13 @@
 const { createServer } = require('@surf-ai/sdk/server')
+const { USE_LOCAL } = require('./db')
 
-// Self-hosted path: when DATABASE_URL is set, provision the LOCAL Postgres
-// schema ourselves before serving. (The SDK's own Surf-managed schema sync still
-// runs inside createServer().start() but is a harmless no-op/warning when the
-// Surf DB isn't used.) When DATABASE_URL is unset (studio), the SDK manages it.
+// Self-hosted path: when a local DB is configured (DATABASE_URL for a Postgres
+// server, or LOCAL_DB_PATH for embedded PGlite), provision its schema ourselves
+// before serving. (The SDK's own Surf-managed schema sync still runs inside
+// createServer().start() but is a harmless no-op/warning when the Surf DB isn't
+// used.) With neither env set (studio), the SDK manages the DB.
 async function main() {
-  if (process.env.DATABASE_URL) {
+  if (USE_LOCAL) {
     try {
       await require('./db/migrate-local').migrate()
     } catch (e) {
@@ -25,3 +27,4 @@ main().catch((e) => {
   console.error('startup failed:', e.message || e)
   process.exit(1)
 })
+

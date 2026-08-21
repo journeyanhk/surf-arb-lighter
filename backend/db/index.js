@@ -1,22 +1,26 @@
 // Database access shim.
 //
-// Two backends, chosen at runtime:
-//   • DATABASE_URL set  -> connect to a LOCAL Postgres (self-hosted VPS). No Surf
-//     key needed for data storage. This is the self-contained deployment path.
-//   • DATABASE_URL unset -> delegate to Surf's managed Postgres via @surf-ai/sdk/db
-//     (the studio default). Keeps the app working unchanged inside the studio.
+// Three backends, chosen at runtime by env (in priority order):
+//   1. DATABASE_URL   -> LOCAL Postgres server via `pg` (if you run your own PG).
+//   2. LOCAL_DB_PATH  -> EMBEDDED Postgres via PGlite (WASM, in-process, single
+//      folder on disk). No server, no password, no setup — just works. This is
+//      the easiest self-hosted path.
+//   3. neither        -> Surf's managed Postgres via @surf-ai/sdk/db (studio).
 //
-// Both return pg-style results ({ rows, rowCount, fields }), so callers are
-// identical regardless of backend. All existing SQL uses standard Postgres
-// ($1 placeholders, now(), interval, FILTER, ANY) — portable across both.
+// All three return pg-style results ({ rows, ... }) and speak real Postgres SQL,
+// so every existing query ($1 placeholders, now()/interval, FILTER, ANY,
+// RETURNING, ::int casts) is portable across all three — zero query rewrites.
 
-const USE_LOCAL = !!process.env.DATABASE_URL
+const HAS_PG_SERVER = !!process.env.DATABASE_URL
+const EMBED_PATH = process.env.LOCAL_DB_PATH || ''
+const USE_LOCAL = HAS_PG_SERVER || !!EMBED_PATH
 
 let _impl = null
 
 function impl() {
   if (_impl) return _impl
-  if (USE_LOCAL) {
+
+  if (HAS_PG_SERVER) {
     const { Pool } = require('pg')
     const pool = new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -24,15 +28,21 @@ function impl() {
       idleTimeoutMillis: 30000,
     })
     pool.on('error', (e) => console.error('[db] pool error:', e.message || e))
-    _impl = {
-      dbQuery: (sql, params = [], _options) => pool.query(sql, params),
-      pool,
-    }
-    console.log('[db] using LOCAL Postgres (DATABASE_URL)')
-  } else {
-    _impl = require('@surf-ai/sdk/db')
-    console.log('[db] using Surf managed Postgres (@surf-ai/sdk/db)')
+    _impl = { dbQuery: (sql, params = []) => pool.query(sql, params) }
+    console.log('[db] using LOCAL Postgres server (DATABASE_URL)')
+    return _impl
   }
+
+  if (EMBED_PATH) {
+    const { PGlite } = require('@electric-sql/pglite')
+    const db = new PGlite(EMBED_PATH) // persists to this folder
+    _impl = { dbQuery: (sql, params) => db.query(sql, params) }
+    console.log(`[db] using EMBEDDED Postgres (PGlite) at ${EMBED_PATH}`)
+    return _impl
+  }
+
+  _impl = require('@surf-ai/sdk/db')
+  console.log('[db] using Surf managed Postgres (@surf-ai/sdk/db)')
   return _impl
 }
 

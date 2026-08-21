@@ -37,3 +37,7 @@ signer/__pycache__/
 
 # Misc
 outputs/
+
+# Embedded DB (PGlite) data
+backend/data/
+data/
