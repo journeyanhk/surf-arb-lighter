@@ -116,6 +116,8 @@ async function scanTick(preloaded) {
     }
 
     const net = (bps) => bps - (s.max_slippage_bps || 0)
+    const orderNotional = Number(s.order_notional_usd) || 0
+    const minDepthRatio = Number(s.min_depth_ratio) > 0 ? Number(s.min_depth_ratio) : 1
     const opportunities = []
     for (const v of valid) {
       const { rows: cnt } = await dbQuery(
@@ -126,6 +128,13 @@ async function scanTick(preloaded) {
       const samples = cnt[0]?.n || 0
       v.samples = samples
       v.net_bps = net(v.best.spread_bps)
+      // Depth multiple the UI shows: how many times our order size the thinner
+      // leg's near-touch book can cover. Matches the live depth guard exactly
+      // (both legs must clear order_size * min_depth_ratio to open).
+      const orderSize = v.best.buy_price > 0 ? orderNotional / v.best.buy_price : 0
+      const thinDepth = Math.min(Number(v.best.buy_depth_base) || 0, Number(v.best.sell_depth_base) || 0)
+      v.depth_ratio = orderSize > 0 ? thinDepth / orderSize : null
+      v.depth_ok = v.depth_ratio != null && v.depth_ratio >= minDepthRatio
       v.armed = samples >= s.min_samples
       v.signal = v.armed && v.net_bps >= s.spread_threshold_bps
       if (v.signal) {
@@ -153,6 +162,7 @@ async function scanTick(preloaded) {
       threshold_bps: s.spread_threshold_bps,
       min_samples: s.min_samples,
       max_slippage_bps: s.max_slippage_bps,
+      min_depth_ratio: minDepthRatio,
       dry_run: s.dry_run,
       auto_execute: s.auto_execute,
       focus_symbol: s.focus_symbol || '',

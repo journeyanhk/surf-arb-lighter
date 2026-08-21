@@ -77,7 +77,7 @@ function Dashboard() {
 
       <TasksPanel />
 
-      <Card title="实时价差" subtitle={`共 ${data?.total_common ?? 0} 个共同市场 · 扫描 ${data?.scanned ?? 0} 个 · 每 8 秒刷新`}>
+      <Card title="实时价差" subtitle={`共 ${data?.total_common ?? 0} 个共同市场 · 扫描 ${data?.scanned ?? 0} 个 · 每 8 秒刷新 · 深度倍数阈值 ${fmt(data?.min_depth_ratio, 1)}×（低于阈值实盘不开仓）`}>
         <div className="overflow-x-auto">
           <table className="w-full text-[13px]">
             <thead>
@@ -88,6 +88,7 @@ function Dashboard() {
                 <Th right>方向</Th>
                 <Th right>价差 (bps)</Th>
                 <Th right>净价差</Th>
+                <Th right>深度倍数</Th>
                 <Th right>样本</Th>
                 <Th right>状态</Th>
               </tr>
@@ -101,6 +102,9 @@ function Dashboard() {
                   <Td right>{r.best?.direction === 'buy_lighter' ? '买L 卖RB' : '买RB 卖L'}</Td>
                   <Td right mono className={spreadColor(r.best?.spread_bps)}>{fmt(r.best?.spread_bps, 1)}</Td>
                   <Td right mono className={spreadColor(r.net_bps)}>{fmt(r.net_bps, 1)}</Td>
+                  <Td right mono className={r.depth_ratio == null ? 'text-[#999]' : r.depth_ok ? 'text-emerald-600' : 'text-red-500'}>
+                    {r.depth_ratio == null ? '—' : `${fmt(r.depth_ratio, 1)}×`}
+                  </Td>
                   <Td right mono>{r.samples ?? 0}</Td>
                   <Td right>
                     {r.signal ? <Badge tone="green">信号</Badge> : r.armed ? <Badge tone="gray">已就绪</Badge> : <Badge tone="light">采样中</Badge>}
@@ -108,7 +112,7 @@ function Dashboard() {
                 </tr>
               ))}
               {!rows.length && (
-                <tr><td colSpan={8} className="py-6 text-center text-[#999]">暂无数据</td></tr>
+                <tr><td colSpan={9} className="py-6 text-center text-[#999]">暂无数据</td></tr>
               )}
             </tbody>
           </table>
