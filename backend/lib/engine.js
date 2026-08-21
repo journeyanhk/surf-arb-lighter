@@ -183,6 +183,7 @@ async function advanceLive(t, row, s, set) {
 }
 
 async function enterLive(t, row, s, set) {
+  if (s.maker_open) return enterLiveMakerOpen(t, row, s, set)
   const buyV = venueTag(t.buy_venue)
   const sellV = venueTag(t.sell_venue)
   // 1) snapshot real positions so reconciliation can measure the delta
@@ -230,6 +231,82 @@ async function enterLive(t, row, s, set) {
         (legErr ? ` ｜ ${legErr}` : '')).slice(0, 300),
     ]
   )
+}
+
+// MAKER-OPEN: rest a passive post-only quote on the BUY leg (no position yet ->
+// zero risk while it sits), and the instant it fills, taker-hedge the SELL leg for
+// exactly the filled base. Re-quote at the touch each tick; cancel-replace to chase.
+// Only opening fee paid is 1 taker (the hedge) instead of 2 — the maker leg is 0.
+//   ENTERING (maker): snapshot -> quote -> [hedge fills + requote]* -> RECONCILING
+// Handing off to reconcileLive at the end reuses the tested single-leg/imbalance
+// protection (it flattens any hedge shortfall via reduce_only). Safe by construction.
+async function enterLiveMakerOpen(t, row, s, set) {
+  const buyV = venueTag(t.buy_venue)
+  const sellV = venueTag(t.sell_venue)
+  const [pbuy, psell] = await Promise.all([sidecar.positions(buyV), sidecar.positions(sellV)])
+  if (!pbuy || !psell) {
+    await set(`state='PAUSED', note=$1`, ['maker 开仓无法读取持仓，已暂停待人工检查'])
+    return
+  }
+  const ticks = (t.entry_ticks || 0) + 1
+
+  // First tick: record the baseline snapshot and post the first passive quote.
+  if (t.pre_buy_pos == null || t.pre_sell_pos == null) {
+    const preBuy = pbuy[t.buy_market_index] || 0
+    const preSell = psell[t.sell_market_index] || 0
+    const bidPx = bookPrice(row, t.buy_venue, 'bid') || t.buy_price
+    const q = await sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'buy', size: t.size, price: bidPx, reduce_only: false, tif: 'post_only', client_order_index: t.id * 10 + 1 })
+    await set(`pre_buy_pos=$1, pre_sell_pos=$2, entry_ticks=$3, buy_ack=$4, note=$5`, [
+      preBuy, preSell, ticks, JSON.stringify(q).slice(0, 500),
+      `maker 开仓挂单：买 ${t.buy_venue} @ ${bidPx.toFixed(6)}${q.ok ? '' : ` ｜ 挂单失败:${q.error}`}`,
+    ])
+    return
+  }
+
+  const filledBuy = Math.max(0, (pbuy[t.buy_market_index] || 0) - (t.pre_buy_pos || 0))
+  const hedged = Math.max(0, (t.pre_sell_pos || 0) - (psell[t.sell_market_index] || 0))
+  const unhedged = filledBuy - hedged
+  const buf = crossBuffer(s)
+
+  // Hedge whatever the maker leg newly filled — taker sell for the exact delta.
+  if (unhedged > eps) {
+    const px = (bookPrice(row, t.sell_venue, 'bid') || t.sell_price) * (1 - buf)
+    await sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'sell', size: unhedged, price: px, reduce_only: false, tif: 'ioc', client_order_index: t.id * 10 + 2 })
+  }
+
+  const filledEnough = filledBuy >= t.size * (1 - 1e-4)
+  const deadline = Math.max(1, Number(s.maker_open_wait_ticks) || 20)
+
+  // Done, or patience exhausted: cancel the resting quote and hand off to reconcile.
+  if (filledEnough || ticks >= deadline) {
+    await sidecar.cancelOrders(buyV, t.buy_market_index)
+    if (filledBuy <= eps) {
+      await set(`state='ERROR', entry_ticks=$1, matched_size=0, pnl_usd=0, closed_at=now(), note=$2`, [
+        ticks, 'maker 开仓超时未成交，已撤单，无持仓',
+      ])
+      return
+    }
+    await set(`state='RECONCILING', entry_ticks=$1, note=$2`, [
+      ticks,
+      filledEnough
+        ? `maker 开仓成交 ${filledBuy.toFixed(6)}，转对账`
+        : `maker 开仓超时，部分成交 ${filledBuy.toFixed(6)}/${t.size}，转对账`,
+    ])
+    return
+  }
+
+  // Re-quote the remaining size at the current bid (cancel old first — non-reduce
+  // orders must never stack, or we could over-fill).
+  await sidecar.cancelOrders(buyV, t.buy_market_index)
+  const remaining = Math.max(0, t.size - filledBuy)
+  if (remaining > eps) {
+    const bidPx = bookPrice(row, t.buy_venue, 'bid') || t.buy_price
+    await sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'buy', size: remaining, price: bidPx, reduce_only: false, tif: 'post_only', client_order_index: t.id * 10 + 1 })
+  }
+  await set(`entry_ticks=$1, note=$2`, [
+    ticks,
+    `maker 开仓挂单中(${ticks}/${deadline})：已成交 ${filledBuy.toFixed(6)}/${t.size}`,
+  ])
 }
 
 async function reconcileLive(t, row, s, set) {
@@ -431,16 +508,18 @@ function fmt(n) {
 // Realistic realized-PnL estimate.
 //   gross convergence capture = entry_spread − exit_spread   (bps on notional)
 //   minus fees:
-//     open  = 2 × taker_fee_bps  (both open legs are IOC takers — always)
+//     open  = 1 × taker_fee_bps if maker_open (only the hedge leg is taker), else 2
 //     close = 2 × taker_fee_bps if taker IOC, else 0 (maker post-only, 0 fee)
 // Still an ESTIMATE from intended spreads, not authed fills.
 function realizedPnl(t, s, closeTaker = !s.maker_close) {
   const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
   const grossBps = (Number(t.entry_spread_bps) || 0) - (Number(t.exit_spread_bps) || 0)
   const takerFee = Number(s.taker_fee_bps) || 0
-  const feeBps = takerFee * 2 + (closeTaker ? takerFee * 2 : 0)
+  const openFee = takerFee * (s.maker_open ? 1 : 2)
+  const closeFee = closeTaker ? takerFee * 2 : 0
+  const feeBps = openFee + closeFee
   const netBps = grossBps - feeBps
-  const note = `名义 ${notional.toFixed(2)} USD，净 ${fmt(netBps)}bps（毛 ${fmt(grossBps)} − 手续费 ${fmt(feeBps)}${closeTaker ? '' : '，maker平仓0费'}）`
+  const note = `名义 ${notional.toFixed(2)} USD，净 ${fmt(netBps)}bps（毛 ${fmt(grossBps)} − 手续费 ${fmt(feeBps)}${s.maker_open || !closeTaker ? '，含 maker 0 费腿' : ''}）`
   return { pnl: (notional * netBps) / 10000, note }
 }
 

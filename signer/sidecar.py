@@ -410,6 +410,47 @@ async def handle_positions(request):
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+async def handle_cancel(request):
+    """撤单：用于 maker 开仓的重新挂单（requote）。cancel_all_orders 是账户级撤单，
+    本工具同一时刻每个交易对只有一个活动任务，故可安全使用。DRY_RUN 下空转。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa
+        body = {}
+    vk = venue_key(body.get("venue"))
+    if not vk:
+        return web.json_response({"ok": False, "error": "unknown venue"}, status=400)
+    v = VENUES[vk]
+    if not v.ready:
+        return web.json_response({"ok": False, "error": f"venue not ready: {v.err}"}, status=409)
+    if DRY_RUN:
+        return web.json_response({"ok": True, "dry_run": True})
+    c = v.client
+    # cancel_all_orders 在不同 SDK 版本签名略有差异，逐个尝试，全部失败再报错。
+    tif_imm = getattr(c, "CANCEL_ALL_TIF_IMMEDIATE", 0)
+    attempts = (
+        lambda: c.cancel_all_orders(time_in_force=tif_imm, time=0),
+        lambda: c.cancel_all_orders(tif_imm, 0),
+        lambda: c.cancel_all_orders(),
+    )
+    last = None
+    for make in attempts:
+        try:
+            res = await make()
+            err = res[2] if isinstance(res, (list, tuple)) and len(res) >= 3 else None
+            if err is None:
+                return web.json_response({"ok": True})
+            last = str(err)
+        except TypeError as e:  # noqa - wrong signature, try next
+            last = f"TypeError: {e}"
+            continue
+        except Exception as e:  # noqa
+            last = str(e)
+            break
+    log.warning("[cancel] %s cancel_all_orders 失败: %s", vk, last)
+    return web.json_response({"ok": False, "error": last or "cancel failed"}, status=500)
+
+
 async def on_startup(app):
     if not TOKEN:
         log.error("SIDECAR_TOKEN 未设置，拒绝启动（防止裸暴露）")
@@ -443,6 +484,7 @@ def make_app():
     app = web.Application(middlewares=[auth_mw])
     app.router.add_get("/health", handle_health)
     app.router.add_post("/order", handle_order)
+    app.router.add_post("/cancel", handle_cancel)
     app.router.add_get("/positions", handle_positions)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)

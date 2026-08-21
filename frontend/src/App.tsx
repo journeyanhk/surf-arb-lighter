@@ -383,6 +383,8 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
       { key: 'max_hold_ticks', label: '最大持仓 tick 数', type: 'num' },
       { key: 'reduce_only', label: 'Reduce-Only 风控', type: 'bool' },
       { key: 'ioc_orders', label: 'IOC 订单', type: 'bool' },
+      { key: 'maker_open', label: 'Maker 挂单开仓（买腿被动挂单 0 费，成交后 taker 对冲卖腿）', type: 'bool' },
+      { key: 'maker_open_wait_ticks', label: 'Maker 开仓耐心 tick 数（挂单未成交则撤单放弃）', type: 'num' },
       { key: 'maker_close', label: 'Maker 挂单平仓（0 手续费，post-only）', type: 'bool' },
       { key: 'maker_close_wait_ticks', label: 'Maker 平仓耐心 tick 数（对冲后可安全久等，超时才 taker 补平）', type: 'num' },
       { key: 'auto_execute', label: '自动执行任务（模拟）', type: 'bool' },

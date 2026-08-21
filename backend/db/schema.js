@@ -50,6 +50,10 @@ exports.settings = pgTable('arb_settings', {
   // IOC when unwinding a hedged position. Falls back to taker after the wait window.
   maker_close: boolean('maker_close').notNull().default(false),
   maker_close_wait_ticks: integer('maker_close_wait_ticks').notNull().default(20),
+  // Maker open: rest a passive post-only quote on the buy leg (0 fee), taker-hedge
+  // the sell leg on fill. Cuts open cost from 2 taker legs to 1.
+  maker_open: boolean('maker_open').notNull().default(false),
+  maker_open_wait_ticks: integer('maker_open_wait_ticks').notNull().default(20),
   exit_spread_bps: doublePrecision('exit_spread_bps').notNull().default(1),
   max_hold_ticks: integer('max_hold_ticks').notNull().default(20),
   auto_execute: boolean('auto_execute').notNull().default(true),
@@ -120,6 +124,7 @@ exports.tasks = pgTable('arb_tasks', {
   pre_sell_pos: doublePrecision('pre_sell_pos'), // sell-venue position snapshot before entry
   buy_ack: text('buy_ack'),   // sidecar order response for the buy leg
   sell_ack: text('sell_ack'), // sidecar order response for the sell leg
+  entry_ticks: integer('entry_ticks').notNull().default(0), // maker open-quote poll counter
   exit_ticks: integer('exit_ticks').notNull().default(0), // maker close-out poll counter
 
   created_at: timestamp('created_at').defaultNow(),

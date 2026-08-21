@@ -37,6 +37,8 @@ const DEFAULTS = {
   ioc_orders: true,
   maker_close: false,
   maker_close_wait_ticks: 20,
+  maker_open: false,
+  maker_open_wait_ticks: 20,
   exit_spread_bps: 1,
   max_hold_ticks: 20,
   auto_execute: true,
@@ -58,6 +60,7 @@ const NUMERIC_MIN = {
   exit_spread_bps: 0,
   max_hold_ticks: 1,
   maker_close_wait_ticks: 1, // 至少等 1 个 tick 再回退 taker
+  maker_open_wait_ticks: 1, // 至少等 1 个 tick 再撤单放弃
   scan_interval_sec: 3,
   scan_market_limit: 1,
 }

@@ -37,6 +37,8 @@ const STATEMENTS = [
      ioc_orders boolean NOT NULL DEFAULT true,
      maker_close boolean NOT NULL DEFAULT false,
      maker_close_wait_ticks integer NOT NULL DEFAULT 20,
+     maker_open boolean NOT NULL DEFAULT false,
+     maker_open_wait_ticks integer NOT NULL DEFAULT 20,
      exit_spread_bps double precision NOT NULL DEFAULT 1,
      max_hold_ticks integer NOT NULL DEFAULT 20,
      auto_execute boolean NOT NULL DEFAULT true,
@@ -95,6 +97,7 @@ const STATEMENTS = [
      pre_sell_pos double precision,
      buy_ack text,
      sell_ack text,
+     entry_ticks integer NOT NULL DEFAULT 0,
      exit_ticks integer NOT NULL DEFAULT 0,
      created_at timestamp DEFAULT now(),
      updated_at timestamp DEFAULT now(),
@@ -110,6 +113,8 @@ const STATEMENTS = [
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS taker_fee_bps double precision NOT NULL DEFAULT 2`,
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS maker_close boolean NOT NULL DEFAULT false`,
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS maker_close_wait_ticks integer NOT NULL DEFAULT 20`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS maker_open boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS maker_open_wait_ticks integer NOT NULL DEFAULT 20`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS exec_mode text NOT NULL DEFAULT 'sim'`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS buy_market_index integer`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS sell_market_index integer`,
@@ -117,6 +122,7 @@ const STATEMENTS = [
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS pre_sell_pos double precision`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS buy_ack text`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS sell_ack text`,
+  `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS entry_ticks integer NOT NULL DEFAULT 0`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS exit_ticks integer NOT NULL DEFAULT 0`,
 
   // Ensure the single settings row exists.

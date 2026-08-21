@@ -62,4 +62,9 @@ async function positions(venue) {
   return j.ok ? j.positions || {} : null
 }
 
-module.exports = { configured, health, placeOrder, positions }
+// 撤销该 venue 上的挂单（账户级 cancel_all）。maker 开仓重新挂单前调用。
+async function cancelOrders(venue, market_index) {
+  return call('/cancel', { method: 'POST', body: { venue, market_index }, timeoutMs: 10000 })
+}
+
+module.exports = { configured, health, placeOrder, positions, cancelOrders }
