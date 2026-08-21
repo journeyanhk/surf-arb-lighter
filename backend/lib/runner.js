@@ -73,7 +73,7 @@ async function scanTick(preloaded) {
     const all = await commonMarkets(s)
     const markets = all.slice(0, limit)
 
-    const rows = await pool(markets, 4, async (m) => {
+    const rows = await pool(markets, 2, async (m) => {
       try {
         const [l, r] = await Promise.all([
           topOfBook(s.lighter_base_url, m.lighter_market_id, s.proxy_url),

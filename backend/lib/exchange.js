@@ -21,20 +21,50 @@ function dispatcherFor(proxyUrl) {
 // Node's fetch (undici) uses `dispatcher`. Support both.
 const IS_BUN = typeof globalThis.Bun !== 'undefined'
 
-async function fetchJson(url, { proxyUrl, timeoutMs = 10000 } = {}) {
-  const ctrl = new AbortController()
-  const t = setTimeout(() => ctrl.abort(), timeoutMs)
-  try {
-    const opts = { signal: ctrl.signal }
-    if (proxyUrl) {
-      if (IS_BUN) opts.proxy = proxyUrl
-      else opts.dispatcher = dispatcherFor(proxyUrl)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// Fetch JSON with backoff on rate limits / transient server errors. RBLighter
+// (rh.lighter.xyz) rate-limits aggressively, so on HTTP 429/5xx we wait and
+// retry a few times, honoring the `Retry-After` header when present, with
+// exponential backoff + jitter. Only after exhausting retries do we throw.
+async function fetchJson(url, { proxyUrl, timeoutMs = 10000, retries = 3 } = {}) {
+  let attempt = 0
+  for (;;) {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), timeoutMs)
+    try {
+      const opts = { signal: ctrl.signal }
+      if (proxyUrl) {
+        if (IS_BUN) opts.proxy = proxyUrl
+        else opts.dispatcher = dispatcherFor(proxyUrl)
+      }
+      const r = await fetch(url, opts)
+      if (r.status === 429 || r.status >= 500) {
+        if (attempt >= retries) throw new Error(`HTTP ${r.status} for ${url}`)
+        const ra = parseInt(r.headers.get('retry-after') || '', 10)
+        const backoff = Number.isFinite(ra)
+          ? ra * 1000
+          : Math.min(500 * 2 ** attempt, 8000) + Math.floor(Math.random() * 400)
+        attempt++
+        clearTimeout(t)
+        await sleep(backoff)
+        continue
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`)
+      return await r.json()
+    } catch (e) {
+      // Network/abort errors: retry with backoff too, then give up.
+      const retriable = e.name === 'AbortError' || /fetch failed|network|ECONN|ETIMEDOUT/i.test(String(e.message || e))
+      if (retriable && attempt < retries) {
+        attempt++
+        clearTimeout(t)
+        await sleep(Math.min(500 * 2 ** attempt, 8000) + Math.floor(Math.random() * 400))
+        continue
+      }
+      throw e
+    } finally {
+      clearTimeout(t)
     }
-    const r = await fetch(url, opts)
-    if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`)
-    return await r.json()
-  } finally {
-    clearTimeout(t)
   }
 }
 
@@ -51,7 +81,7 @@ async function listOrderBooks(baseUrl, proxyUrl) {
 // Best bid (highest) / best ask (lowest) for one market, with a short cache
 // so repeated scan ticks don't hammer the venue and trip HTTP 429.
 const tobCache = new Map()
-const TOB_TTL = 4000
+const TOB_TTL = 6000
 
 async function topOfBook(baseUrl, marketId, proxyUrl) {
   const key = `${baseUrl}#${marketId}`

@@ -24,7 +24,15 @@ async function main() {
   // to reverse_proxy to this one port. API routes are already registered inside
   // createServer(), so they take precedence; everything else falls back to the
   // SPA's index.html (except /api, which 404s normally).
-  const distDir = process.env.FRONTEND_DIST || path.join(__dirname, '..', 'frontend', 'dist')
+  // Vite builds the static client bundle into dist/client (dist/server is the
+  // unused SSR bundle), so that's the folder we serve.
+  const distDir =
+    process.env.FRONTEND_DIST ||
+    [
+      path.join(__dirname, '..', 'frontend', 'dist', 'client'),
+      path.join(__dirname, '..', 'frontend', 'dist'),
+    ].find((d) => fs.existsSync(path.join(d, 'index.html'))) ||
+    path.join(__dirname, '..', 'frontend', 'dist', 'client')
   if (fs.existsSync(path.join(distDir, 'index.html'))) {
     server.app.use(express.static(distDir))
     server.app.get('*', (req, res, next) => {
