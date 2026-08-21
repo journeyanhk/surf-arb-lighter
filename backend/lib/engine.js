@@ -358,22 +358,52 @@ async function reconcileLive(t, row, s, set) {
   await set(`state='HOLDING', matched_size=$1, note=$2`, [matched, note])
 }
 
+// TAKER close-out. THE naked-leg bug fix: we must NEVER mark a task CLOSED until
+// BOTH legs are confirmed flat against real positions. The old code fired two IOC
+// closes and immediately set state=CLOSED — if one IOC missed the book, that leg
+// stayed naked and got flattened much later at a terrible price (the ANTHROPIC
+// -0.18 loss in the trade export). Now we poll each tick and re-cross whatever is
+// still open with reduce_only IOC (which can't flip a position, so re-firing an
+// already-filled leg is a harmless no-op) until the position is genuinely gone.
 async function exitLive(t, row, s, set) {
   if (s.maker_close) return exitLiveMaker(t, row, s, set)
   const buyV = venueTag(t.buy_venue)
   const sellV = venueTag(t.sell_venue)
+  const [pbuy, psell] = await Promise.all([sidecar.positions(buyV), sidecar.positions(sellV)])
+  if (!pbuy || !psell) {
+    await set(`state='PAUSED', note=$1`, ['平仓对账失败：无法读取持仓，已暂停待人工检查'])
+    return
+  }
+  const remLong = Math.max(0, (pbuy[t.buy_market_index] || 0) - (t.pre_buy_pos || 0))
+  const remShort = Math.max(0, (t.pre_sell_pos || 0) - (psell[t.sell_market_index] || 0))
+  const ticks = (t.exit_ticks || 0) + 1
   const buf = crossBuffer(s)
-  // buy leg opened long -> close by selling; sell leg opened short -> close by buying.
-  const closeSellPx = (bookPrice(row, t.buy_venue, 'bid') || t.buy_price) * (1 - buf)
-  const closeBuyPx = (bookPrice(row, t.sell_venue, 'ask') || t.sell_price) * (1 + buf)
-  await Promise.all([
-    sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: t.matched_size, price: closeSellPx, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 5 }),
-    sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: t.matched_size, price: closeBuyPx, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 6 }),
-  ])
-  const { pnl, note } = realizedPnl(t, s, true)
-  await set(`state='CLOSED', pnl_usd=$1, closed_at=now(), note=$2`, [
-    pnl,
-    `已提交实盘 reduce-only 双腿平仓：${note}`,
+
+  // Both legs confirmed flat against real positions -> ONLY now mark CLOSED.
+  if (remLong <= eps && remShort <= eps) {
+    const { pnl, note } = realizedPnl(t, s, true)
+    await set(`state='CLOSED', exit_ticks=$1, pnl_usd=$2, closed_at=now(), note=$3`, [
+      ticks, pnl, `双腿 reduce-only 平仓已确认全部成交：${note}`,
+    ])
+    return
+  }
+
+  // Re-cross whichever leg is still open, marketable across the book. Unique
+  // per-tick client_order_index so no venue-side dedupe can drop a retry.
+  const jobs = []
+  if (remLong > eps) {
+    const px = (bookPrice(row, t.buy_venue, 'bid') || t.buy_price) * (1 - buf)
+    jobs.push(sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: remLong, price: px, reduce_only: true, tif: 'ioc', client_order_index: t.id * 100000 + ticks * 10 + 5 }))
+  }
+  if (remShort > eps) {
+    const px = (bookPrice(row, t.sell_venue, 'ask') || t.sell_price) * (1 + buf)
+    jobs.push(sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: remShort, price: px, reduce_only: true, tif: 'ioc', client_order_index: t.id * 100000 + ticks * 10 + 6 }))
+  }
+  await Promise.all(jobs)
+
+  await set(`exit_ticks=$1, note=$2`, [
+    ticks,
+    `平仓补平中(${ticks})：剩余多腿 ${remLong.toFixed(6)} / 空腿 ${remShort.toFixed(6)}，reduce-only IOC 重挂直到归零`,
   ])
 }
 
