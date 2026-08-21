@@ -71,7 +71,18 @@ async function scanTick(preloaded) {
     const s = preloaded || (await loadSettings())
     const limit = Math.min(Math.max(parseInt(s.scan_market_limit, 10) || SCAN_LIMIT, 1), 40)
     const all = await commonMarkets(s)
-    const markets = all.slice(0, limit)
+    // Scan whitelist: if set, sample ONLY these symbols (far fewer requests per
+    // round -> rounds finish fast -> the min-sample gate is actually reachable).
+    // Applied after the (cached) common-market list so edits take effect at once.
+    const wl = new Set(
+      String(s.scan_symbols || '')
+        .split(/[,\s]+/)
+        .map((x) => x.trim().toUpperCase())
+        .filter(Boolean)
+    )
+    const markets = wl.size
+      ? all.filter((m) => wl.has(String(m.symbol).toUpperCase()))
+      : all.slice(0, limit)
 
     const rows = await pool(markets, 2, async (m) => {
       try {
@@ -225,6 +236,7 @@ function start() {
   let stopped = false
   // Self-scheduling loop so the interval can change live from settings.
   const loop = async () => {
+    const t0 = Date.now()
     let intervalMs = SCAN_INTERVAL_MS
     try {
       const s = await loadSettings()
@@ -236,7 +248,10 @@ function start() {
     } catch (e) {
       console.error('[runner] tick failed:', e.message || e)
     } finally {
-      if (!stopped) timer = setTimeout(loop, intervalMs)
+      // Schedule from THIS round's start, not after completion: cadence becomes
+      // max(scanDuration, interval) instead of scanDuration + interval, so a slow
+      // round doesn't compound the wait. Small floor prevents a hot loop.
+      if (!stopped) timer = setTimeout(loop, Math.max(250, intervalMs - (Date.now() - t0)))
     }
   }
   timer = setTimeout(loop, 2000)

@@ -59,6 +59,10 @@ exports.settings = pgTable('arb_settings', {
   auto_execute: boolean('auto_execute').notNull().default(true),
   // Start-simple controls: trade only one market, hold at most N positions at once.
   focus_symbol: text('focus_symbol').notNull().default(''),
+  // Optional scan whitelist (comma/space separated symbols, e.g. "BTC,ETH"). When
+  // set, ONLY these markets are scanned/sampled — far fewer requests per round, so
+  // rounds finish fast and the min-sample gate is actually reachable. Empty = all.
+  scan_symbols: text('scan_symbols').notNull().default(''),
   max_concurrent_tasks: integer('max_concurrent_tasks').notNull().default(1),
   background_enabled: boolean('background_enabled').notNull().default(true),
   scan_interval_sec: integer('scan_interval_sec').notNull().default(8),

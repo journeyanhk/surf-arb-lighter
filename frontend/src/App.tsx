@@ -380,6 +380,7 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
     note: '建议先选定 1 个币种、仓位上限设为 1，把完整流程跑顺、验证盈亏无误后再逐步放开。',
     fields: [
       { key: 'focus_symbol', label: '只交易此币种（留空=全部）', type: 'symbol' },
+      { key: 'scan_symbols', label: '只扫描这些币种（逗号分隔，如 BTC,ETH；留空=按下方数量扫描）', placeholder: 'BTC,ETH' },
       { key: 'max_concurrent_tasks', label: '同时最多持有仓位数', type: 'num' },
     ],
   },

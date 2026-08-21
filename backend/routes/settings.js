@@ -43,6 +43,7 @@ const DEFAULTS = {
   max_hold_ticks: 20,
   auto_execute: true,
   focus_symbol: '',
+  scan_symbols: '',
   max_concurrent_tasks: 1,
   background_enabled: true,
   scan_interval_sec: 8,
