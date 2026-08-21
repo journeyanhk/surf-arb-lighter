@@ -274,7 +274,13 @@ async function enterLiveMakerOpen(t, row, s, set) {
     await sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'sell', size: unhedged, price: px, reduce_only: false, tif: 'ioc', client_order_index: t.id * 10 + 2 })
   }
 
-  const filledEnough = filledBuy >= t.size * (1 - 1e-4)
+  // "Enough filled" must tolerate the venue's size step: our target size is a raw
+  // notional/price float (e.g. 0.164259…), but the exchange rounds order size to a
+  // lot, so the last sub-lot tail (e.g. 0.00026) can NEVER fill. Treat ≥99% as done
+  // instead of 99.99%, so a fully-established position isn't stuck "quoting" chasing
+  // an unplaceable remainder until timeout.
+  const dust = t.size * 0.01
+  const filledEnough = filledBuy >= t.size - dust
   const deadline = Math.max(1, Number(s.maker_open_wait_ticks) || 20)
 
   // Done, or patience exhausted: cancel the resting quote and hand off to reconcile.
@@ -290,22 +296,23 @@ async function enterLiveMakerOpen(t, row, s, set) {
       ticks,
       filledEnough
         ? `maker 开仓成交 ${filledBuy.toFixed(6)}，转对账`
-        : `maker 开仓超时，部分成交 ${filledBuy.toFixed(6)}/${t.size}，转对账`,
+        : `maker 开仓超时，部分成交 ${filledBuy.toFixed(6)}/${t.size.toFixed(6)}，转对账`,
     ])
     return
   }
 
   // Re-quote the remaining size at the current bid (cancel old first — non-reduce
-  // orders must never stack, or we could over-fill).
+  // orders must never stack, or we could over-fill). Skip if only unplaceable dust
+  // is left, so we don't churn cancel/repost on a sub-lot tail.
   await sidecar.cancelOrders(buyV, t.buy_market_index)
   const remaining = Math.max(0, t.size - filledBuy)
-  if (remaining > eps) {
+  if (remaining > dust) {
     const bidPx = bookPrice(row, t.buy_venue, 'bid') || t.buy_price
     await sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'buy', size: remaining, price: bidPx, reduce_only: false, tif: 'post_only', client_order_index: t.id * 10 + 1 })
   }
   await set(`entry_ticks=$1, note=$2`, [
     ticks,
-    `maker 开仓挂单中(${ticks}/${deadline})：已成交 ${filledBuy.toFixed(6)}/${t.size}`,
+    `maker 开仓挂单中(${ticks}/${deadline})：已成交 ${filledBuy.toFixed(6)}/${t.size.toFixed(6)}`,
   ])
 }
 
