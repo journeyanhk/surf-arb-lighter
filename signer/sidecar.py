@@ -306,8 +306,11 @@ async def handle_order(request):
             return web.json_response({"ok": False, "dry_run": True, "error": str(e)}, status=500)
 
     # LIVE：真实提交 IOC 限价单（吃单）
+    # 注意：create_order 返回 (CreateOrder, RespSendTx, err)。err=None 只代表
+    # “交易已被定序器接收”，并【不代表已成交】——IOC 是否撮合成功要靠随后的持仓/
+    # 成交查询确认。这里把定序器的返回码/tx_hash 记录下来，便于事后追踪。
     try:
-        tx, tx_hash, err = await c.create_order(
+        _tx, resp, err = await c.create_order(
             market_index=market_index,
             client_order_index=client_order_index,
             base_amount=base_int,
@@ -318,13 +321,35 @@ async def handle_order(request):
             reduce_only=reduce_only,
             order_expiry=0,
         )
+        # resp 是 RespSendTx（可能是 pydantic 模型），逐字段安全取值
+        def g(o, k):
+            try:
+                return getattr(o, k)
+            except Exception:  # noqa
+                try:
+                    return o.get(k)
+                except Exception:  # noqa
+                    return None
+        code = g(resp, "code")
+        message = g(resp, "message")
+        txh = g(resp, "tx_hash")
+        pexec = g(resp, "predicted_execution_time_ms")
+        if err is not None:
+            log.warning("[order] %s 提交失败 market=%s side=%s base=%s price=%s err=%s",
+                        vk, market_index, side, base_int, price_int, err)
+        else:
+            log.info("[order] %s 已提交(未必成交) market=%s side=%s base=%s price=%s code=%s tx=%s 预计执行=%sms",
+                     vk, market_index, side, base_int, price_int, code, txh, pexec)
         return web.json_response({
             "ok": err is None, "dry_run": False,
-            "tx_hash": tx_hash, "err": str(err) if err else None,
+            "tx_hash": str(txh) if txh is not None else None,
+            "code": code, "message": message, "predicted_execution_time_ms": pexec,
+            "err": str(err) if err else None,
             "base_int": base_int, "price_int": price_int,
             "symbol": meta.get("symbol"),
         })
     except Exception as e:  # noqa
+        log.warning("[order 500] %s create_order 异常: %s", vk, e)
         return web.json_response({"ok": False, "dry_run": False, "error": str(e)}, status=500)
 
 
