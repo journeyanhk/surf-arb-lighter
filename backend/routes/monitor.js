@@ -36,4 +36,20 @@ router.get('/signals', async (_req, res) => {
   }
 })
 
+// Live-execution sidecar status: whether the Python signing service is
+// configured and both venues are ready. Lets the panel confirm the wiring
+// before enabling live trading.
+router.get('/sidecar', async (_req, res) => {
+  try {
+    const sidecar = require('../lib/sidecar')
+    if (!sidecar.configured()) {
+      return res.json({ configured: false, note: '未配置执行边车（ARB_SIDECAR_TOKEN 未设置）—— 当前为纯模拟' })
+    }
+    const h = await sidecar.health()
+    res.json({ configured: true, ...h })
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) })
+  }
+})
+
 module.exports = router

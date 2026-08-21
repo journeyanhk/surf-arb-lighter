@@ -105,6 +105,16 @@ exports.tasks = pgTable('arb_tasks', {
   pnl_usd: doublePrecision('pnl_usd'),
   note: text('note').default(''),
   dry_run: boolean('dry_run').notNull().default(true),
+
+  // ---- Real-execution fields (populated only when routed through the sidecar) ----
+  exec_mode: text('exec_mode').notNull().default('sim'), // 'sim' | 'live'
+  buy_market_index: integer('buy_market_index'),
+  sell_market_index: integer('sell_market_index'),
+  pre_buy_pos: doublePrecision('pre_buy_pos'),   // buy-venue position snapshot before entry
+  pre_sell_pos: doublePrecision('pre_sell_pos'), // sell-venue position snapshot before entry
+  buy_ack: text('buy_ack'),   // sidecar order response for the buy leg
+  sell_ack: text('sell_ack'), // sidecar order response for the sell leg
+
   created_at: timestamp('created_at').defaultNow(),
   updated_at: timestamp('updated_at').defaultNow(),
   closed_at: timestamp('closed_at'),

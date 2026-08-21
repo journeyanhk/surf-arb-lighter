@@ -83,6 +83,8 @@ async function scanTick(preloaded) {
         const { buyLighter, buyRblighter, best } = computeSpread(l, r)
         return {
           symbol: m.symbol,
+          lighter_market_id: m.lighter_market_id,
+          rblighter_market_id: m.rblighter_market_id,
           lighter_bid: l.bestBid,
           lighter_ask: l.bestAsk,
           rblighter_bid: r.bestBid,

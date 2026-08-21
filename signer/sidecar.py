@@ -1,0 +1,367 @@
+# -*- coding: utf-8 -*-
+#
+# Lighter / RBLighter 实盘执行边车（sidecar）
+# =================================================
+# 这是接实盘的核心。用官方 lighter-sdk 起两个 SignerClient（Lighter + RBLighter），
+# 对外只暴露 localhost 内网接口，供 Node 后端调用来下真实 IOC 订单、查真实持仓。
+#
+# 安全设计（务必理解）：
+#   1. 只监听 127.0.0.1，绝不对公网开放。
+#   2. 每个请求必须带 X-Sidecar-Token（与 Node 端共享的密钥），否则拒绝。
+#   3. 默认 DRY_RUN=true —— 只签名不发送，零资金风险。要真实下单必须显式设
+#      SIDECAR_DRY_RUN=false。
+#   4. 单笔名义额上限 SIDECAR_MAX_NOTIONAL_USD，超过直接拒绝。
+#   5. base_amount / price 由本进程按市场精度缩放成整数，Node 端只传人类可读的
+#      浮点数量/价格，缩放集中在一处，避免各处填错精度。
+#
+# 依赖：见 requirements.txt（lighter-sdk, aiohttp）。只能装在 Linux x86_64。
+#
+# 环境变量：
+#   SIDECAR_HOST                默认 127.0.0.1
+#   SIDECAR_PORT                默认 8787
+#   SIDECAR_TOKEN               必填，与 Node 端 ARB_SIDECAR_TOKEN 一致
+#   SIDECAR_DRY_RUN             默认 true（true=只签名不发送）
+#   SIDECAR_MAX_NOTIONAL_USD    默认 100，单笔名义额上限
+#   LIGHTER_BASE_URL / LIGHTER_ACCOUNT_INDEX / LIGHTER_API_KEY_INDEX / LIGHTER_API_PRIVATE_KEY [/ LIGHTER_CHAIN_ID]
+#   RBLIGHTER_BASE_URL / RBLIGHTER_ACCOUNT_INDEX / RBLIGHTER_API_KEY_INDEX / RBLIGHTER_API_PRIVATE_KEY [/ RBLIGHTER_CHAIN_ID]
+
+import os
+import sys
+import asyncio
+import logging
+
+import aiohttp
+from aiohttp import web
+
+try:
+    import lighter
+except ImportError:
+    print("缺少依赖：请先 pip install -r requirements.txt (lighter-sdk)")
+    sys.exit(1)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [sidecar] %(message)s")
+log = logging.getLogger("sidecar")
+
+
+def env(name, default=None):
+    v = os.environ.get(name, default)
+    return v.strip() if isinstance(v, str) else v
+
+
+def env_bool(name, default):
+    v = env(name)
+    if v is None:
+        return default
+    return str(v).lower() in ("1", "true", "yes", "on")
+
+
+DRY_RUN = env_bool("SIDECAR_DRY_RUN", True)
+MAX_NOTIONAL_USD = float(env("SIDECAR_MAX_NOTIONAL_USD", "100") or 100)
+TOKEN = env("SIDECAR_TOKEN", "")
+
+
+class Venue:
+    """封装一个交易所：官方 SignerClient + 市场精度元数据。"""
+
+    def __init__(self, name, base_url, account_index, api_key_index, private_key, chain_id):
+        self.name = name
+        self.base_url = base_url
+        self.account_index = int(account_index) if account_index not in (None, "") else None
+        self.api_key_index = int(api_key_index) if api_key_index not in (None, "") else None
+        self.private_key = private_key
+        self.chain_id = int(chain_id) if chain_id not in (None, "") else None
+        self.client = None          # lighter.SignerClient
+        self.ready = False
+        self.err = None
+        self.markets = {}           # market_id -> {size_decimals, price_decimals, min_base_amount}
+
+    @property
+    def configured(self):
+        return bool(
+            self.base_url and self.private_key
+            and self.account_index is not None and self.api_key_index is not None
+        )
+
+    async def init(self):
+        if not self.configured:
+            self.err = "配置不完整（缺 base_url/account_index/api_key_index/private_key）"
+            return
+        try:
+            kwargs = dict(
+                url=self.base_url,
+                account_index=self.account_index,
+                api_private_keys={self.api_key_index: self.private_key},
+            )
+            if self.chain_id:
+                kwargs["chain_id"] = self.chain_id
+            self.client = lighter.SignerClient(**kwargs)
+            err = self.client.check_client()
+            if err is not None:
+                self.err = f"check_client: {err}"
+                self.ready = False
+            else:
+                self.ready = True
+                self.err = None
+                log.info("%s: SignerClient 就绪", self.name)
+        except Exception as e:  # noqa
+            self.err = f"init 失败: {e}"
+            self.ready = False
+        await self.load_markets()
+
+    async def load_markets(self):
+        """拉取每个市场的精度与最小下单量，用于把浮点数量/价格缩放成整数。"""
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(f"{self.base_url}/api/v1/orderBooks", timeout=15) as r:
+                    j = await r.json()
+            for ob in (j.get("order_books") or []):
+                mid = ob.get("market_id")
+                if mid is None:
+                    continue
+                self.markets[int(mid)] = {
+                    "symbol": ob.get("symbol"),
+                    "size_decimals": int(ob.get("supported_size_decimals", 0)),
+                    "price_decimals": int(ob.get("supported_price_decimals", 0)),
+                    "min_base_amount": float(ob.get("min_base_amount", 0) or 0),
+                }
+            log.info("%s: 载入 %d 个市场精度", self.name, len(self.markets))
+        except Exception as e:  # noqa
+            log.warning("%s: 载入市场精度失败: %s", self.name, e)
+
+    def scale(self, market_index, size, price):
+        """把人类可读的 size/price 缩放成 SDK 需要的整数。返回 (base_int, price_int, meta)。"""
+        meta = self.markets.get(int(market_index))
+        if not meta:
+            raise ValueError(f"未知市场 {market_index}（元数据未载入）")
+        if size < meta["min_base_amount"]:
+            raise ValueError(
+                f"下单量 {size} 小于最小下单量 {meta['min_base_amount']}（市场 {market_index}）"
+            )
+        base_int = int(round(size * (10 ** meta["size_decimals"])))
+        price_int = int(round(price * (10 ** meta["price_decimals"])))
+        if base_int <= 0 or price_int <= 0:
+            raise ValueError(f"缩放后非正数 base={base_int} price={price_int}")
+        return base_int, price_int, meta
+
+    async def positions(self):
+        """查真实持仓（公开账户接口，用于对账）。返回 {market_id: signed_size}。"""
+        url = f"{self.base_url}/api/v1/account?by=index&value={self.account_index}"
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(url, timeout=15) as r:
+                j = await r.json()
+        out = {}
+        for acc in (j.get("accounts") or []):
+            for p in (acc.get("positions") or []):
+                mid = p.get("market_id")
+                if mid is None:
+                    continue
+                # sign: 1=long, -1/2=short（不同版本字段名不一，做兼容）
+                size = float(p.get("position", p.get("size", 0)) or 0)
+                sign = p.get("sign", p.get("side", 1))
+                try:
+                    sign = int(sign)
+                except Exception:  # noqa
+                    sign = 1
+                signed = size if sign in (1,) else -size
+                out[int(mid)] = signed
+        return out
+
+    async def close(self):
+        try:
+            if self.client and hasattr(self.client, "close"):
+                res = self.client.close()
+                if asyncio.iscoroutine(res):
+                    await res
+        except Exception:  # noqa
+            pass
+
+
+VENUES = {}
+
+
+def build_venues():
+    VENUES["lighter"] = Venue(
+        "Lighter",
+        env("LIGHTER_BASE_URL", "https://mainnet.zklighter.elliot.ai"),
+        env("LIGHTER_ACCOUNT_INDEX"),
+        env("LIGHTER_API_KEY_INDEX"),
+        env("LIGHTER_API_PRIVATE_KEY"),
+        env("LIGHTER_CHAIN_ID"),
+    )
+    VENUES["rblighter"] = Venue(
+        "RBLighter",
+        env("RBLIGHTER_BASE_URL", "https://api.rh.lighter.xyz"),
+        env("RBLIGHTER_ACCOUNT_INDEX"),
+        env("RBLIGHTER_API_KEY_INDEX"),
+        env("RBLIGHTER_API_PRIVATE_KEY"),
+        env("RBLIGHTER_CHAIN_ID"),
+    )
+
+
+def venue_key(v):
+    v = (v or "").lower()
+    if v in ("lighter", "l"):
+        return "lighter"
+    if v in ("rblighter", "rb", "r"):
+        return "rblighter"
+    return None
+
+
+# ------------------------- HTTP 处理 -------------------------
+
+@web.middleware
+async def auth_mw(request, handler):
+    if request.path == "/health" and request.method == "GET":
+        # health 也要 token，避免裸暴露；但放行 OPTIONS
+        pass
+    tok = request.headers.get("X-Sidecar-Token", "")
+    if not TOKEN or tok != TOKEN:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    return await handler(request)
+
+
+async def handle_health(request):
+    venues = {}
+    for k, v in VENUES.items():
+        venues[k] = {
+            "configured": v.configured,
+            "ready": v.ready,
+            "err": v.err,
+            "markets": len(v.markets),
+        }
+    return web.json_response({
+        "ok": True,
+        "dry_run": DRY_RUN,
+        "max_notional_usd": MAX_NOTIONAL_USD,
+        "venues": venues,
+    })
+
+
+async def handle_order(request):
+    try:
+        body = await request.json()
+    except Exception:  # noqa
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+
+    vk = venue_key(body.get("venue"))
+    if not vk:
+        return web.json_response({"ok": False, "error": "unknown venue"}, status=400)
+    v = VENUES[vk]
+    if not v.ready:
+        return web.json_response({"ok": False, "error": f"venue not ready: {v.err}"}, status=409)
+
+    try:
+        market_index = int(body["market_index"])
+        size = float(body["size"])
+        price = float(body["price"])
+        side = str(body.get("side", "buy")).lower()
+        reduce_only = bool(body.get("reduce_only", False))
+        client_order_index = int(body.get("client_order_index", 0))
+    except Exception as e:  # noqa
+        return web.json_response({"ok": False, "error": f"bad params: {e}"}, status=400)
+
+    notional = size * price
+    if notional > MAX_NOTIONAL_USD:
+        return web.json_response(
+            {"ok": False, "error": f"名义额 {notional:.2f} 超过上限 {MAX_NOTIONAL_USD}"},
+            status=400,
+        )
+
+    try:
+        base_int, price_int, meta = v.scale(market_index, size, price)
+    except Exception as e:  # noqa
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+    is_ask = side in ("sell", "ask", "short")
+    c = v.client
+
+    # DRY_RUN：只签名不发送
+    if DRY_RUN:
+        try:
+            result = c.sign_create_order(
+                market_index=market_index,
+                client_order_index=client_order_index,
+                base_amount=base_int,
+                price=price_int,
+                is_ask=is_ask,
+                order_type=c.ORDER_TYPE_LIMIT,
+                time_in_force=c.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+                reduce_only=reduce_only,
+                order_expiry=0,  # IOC 必须为 0
+            )
+            err = result[3] if isinstance(result, (list, tuple)) and len(result) >= 4 else None
+            return web.json_response({
+                "ok": err is None, "dry_run": True, "err": err,
+                "base_int": base_int, "price_int": price_int,
+                "symbol": meta.get("symbol"),
+            })
+        except Exception as e:  # noqa
+            return web.json_response({"ok": False, "dry_run": True, "error": str(e)}, status=500)
+
+    # LIVE：真实提交 IOC 限价单（吃单）
+    try:
+        tx, tx_hash, err = await c.create_order(
+            market_index=market_index,
+            client_order_index=client_order_index,
+            base_amount=base_int,
+            price=price_int,
+            is_ask=is_ask,
+            order_type=c.ORDER_TYPE_LIMIT,
+            time_in_force=c.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+            reduce_only=reduce_only,
+            order_expiry=0,
+        )
+        return web.json_response({
+            "ok": err is None, "dry_run": False,
+            "tx_hash": tx_hash, "err": str(err) if err else None,
+            "base_int": base_int, "price_int": price_int,
+            "symbol": meta.get("symbol"),
+        })
+    except Exception as e:  # noqa
+        return web.json_response({"ok": False, "dry_run": False, "error": str(e)}, status=500)
+
+
+async def handle_positions(request):
+    vk = venue_key(request.query.get("venue"))
+    if not vk:
+        return web.json_response({"ok": False, "error": "unknown venue"}, status=400)
+    v = VENUES[vk]
+    if not v.configured:
+        return web.json_response({"ok": False, "error": "venue not configured"}, status=409)
+    try:
+        pos = await v.positions()
+        return web.json_response({"ok": True, "positions": pos})
+    except Exception as e:  # noqa
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def on_startup(app):
+    if not TOKEN:
+        log.error("SIDECAR_TOKEN 未设置，拒绝启动（防止裸暴露）")
+        raise SystemExit(1)
+    build_venues()
+    await asyncio.gather(*[v.init() for v in VENUES.values()])
+    mode = "DRY_RUN(只签名不发送)" if DRY_RUN else "LIVE(真实下单)"
+    log.info("边车启动完成，模式=%s，单笔上限=%.2f USD", mode, MAX_NOTIONAL_USD)
+    for k, v in VENUES.items():
+        log.info("  %s: ready=%s err=%s", k, v.ready, v.err)
+
+
+async def on_cleanup(app):
+    await asyncio.gather(*[v.close() for v in VENUES.values()])
+
+
+def make_app():
+    app = web.Application(middlewares=[auth_mw])
+    app.router.add_get("/health", handle_health)
+    app.router.add_post("/order", handle_order)
+    app.router.add_get("/positions", handle_positions)
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+    return app
+
+
+if __name__ == "__main__":
+    host = env("SIDECAR_HOST", "127.0.0.1")
+    port = int(env("SIDECAR_PORT", "8787") or 8787)
+    web.run_app(make_app(), host=host, port=port)
