@@ -16,6 +16,10 @@
 #   LIGHTER_BASE_URL, LIGHTER_ACCOUNT_INDEX, LIGHTER_API_KEY_INDEX, LIGHTER_API_PRIVATE_KEY
 #   RBLIGHTER_BASE_URL, RBLIGHTER_ACCOUNT_INDEX, RBLIGHTER_API_KEY_INDEX, RBLIGHTER_API_PRIVATE_KEY
 #   （可选）VERIFY_MARKET_INDEX  用于测试签名的市场，默认 1
+#   （可选）LIGHTER_CHAIN_ID / RBLIGHTER_CHAIN_ID  链 ID，一般留空由 SDK 自动获取
+#
+# 注意：官方 SDK 新版构造函数用 api_private_keys={key_index: 私钥} 字典，
+#       不再是 private_key=字符串。本脚本已适配。
 
 import os
 import sys
@@ -33,19 +37,23 @@ def env(name, default=None):
     return v.strip() if isinstance(v, str) else v
 
 
-async def verify_venue(name, base_url, account_index, api_key_index, private_key, market_index):
+async def verify_venue(name, base_url, account_index, api_key_index, private_key, market_index, chain_id):
     print(f"\n=== 验证 {name} ({base_url}) ===")
     if not (base_url and private_key and account_index is not None and api_key_index is not None):
         print(f"  [跳过] {name} 配置不完整")
         return False
 
+    key_index = int(api_key_index)
     try:
-        client = lighter.SignerClient(
+        # 新版官方 SDK：api_private_keys 是 {key_index: 私钥字符串} 字典
+        kwargs = dict(
             url=base_url,
-            private_key=private_key,
             account_index=int(account_index),
-            api_key_index=int(api_key_index),
+            api_private_keys={key_index: private_key},
         )
+        if chain_id:
+            kwargs["chain_id"] = int(chain_id)
+        client = lighter.SignerClient(**kwargs)
     except Exception as e:
         print(f"  [失败] 初始化 SignerClient 出错：{e}")
         return False
@@ -71,7 +79,6 @@ async def verify_venue(name, base_url, account_index, api_key_index, private_key
             order_type=client.ORDER_TYPE_LIMIT,
             time_in_force=client.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
             reduce_only=False,
-            trigger_price=0,
         )
         print(f"  [成功] sign_create_order 签名成功 ✓  该 venue 可用官方 SDK 签名")
         # 注意已知问题 #98：部分版本 sign_create_order 会忽略 market_index，
@@ -95,6 +102,7 @@ async def main():
         env("LIGHTER_API_KEY_INDEX"),
         env("LIGHTER_API_PRIVATE_KEY"),
         market_index,
+        env("LIGHTER_CHAIN_ID"),
     )
 
     rblighter_ok = await verify_venue(
@@ -104,6 +112,7 @@ async def main():
         env("RBLIGHTER_API_KEY_INDEX"),
         env("RBLIGHTER_API_PRIVATE_KEY"),
         market_index,
+        env("RBLIGHTER_CHAIN_ID"),
     )
 
     print("\n================ 结论 ================")
