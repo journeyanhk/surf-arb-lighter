@@ -42,6 +42,8 @@ const DEFAULTS = {
   exit_spread_bps: 1,
   max_hold_ticks: 20,
   auto_execute: true,
+  focus_symbol: '',
+  max_concurrent_tasks: 1,
   background_enabled: true,
   scan_interval_sec: 8,
   scan_market_limit: 24,
@@ -61,6 +63,7 @@ const NUMERIC_MIN = {
   max_hold_ticks: 1,
   maker_close_wait_ticks: 1, // 至少等 1 个 tick 再回退 taker
   maker_open_wait_ticks: 1, // 至少等 1 个 tick 再撤单放弃
+  max_concurrent_tasks: 1, // 至少允许 1 个仓位
   scan_interval_sec: 3,
   scan_market_limit: 1,
 }

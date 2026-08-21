@@ -546,14 +546,30 @@ async function stepEngine(rows, s) {
     }
   }
 
+  // Opening gates for "start simple" operation:
+  //   focus_symbol        — if set, only ever open this one market (single-coin mode)
+  //   max_concurrent_tasks — hard cap on simultaneous open positions (default 1)
+  // Count PAUSED too: it may still hold real exposure, so it occupies a slot.
+  const cap = Math.max(1, Number(s.max_concurrent_tasks) || 1)
+  const focus = String(s.focus_symbol || '').trim().toUpperCase()
+  // Re-count after advancing (some may have closed / a leg may have paused).
+  const { rows: cnt } = await dbQuery(
+    `SELECT count(*)::int AS n FROM arb_tasks WHERE state = ANY($1)`,
+    [ACTIVE_STATES]
+  )
+  let activeCount = cnt[0].n
+
   for (const r of rows) {
+    if (activeCount >= cap) break
     if (!r.signal) continue
+    if (focus && String(r.symbol).toUpperCase() !== focus) continue
     const { rows: ex } = await dbQuery(
       `SELECT id FROM arb_tasks WHERE symbol=$1 AND state = ANY($2) LIMIT 1`,
       [r.symbol, ACTIVE_STATES]
     )
     if (ex.length) continue
     await openTask(r, s)
+    activeCount++
   }
 
   return summary()

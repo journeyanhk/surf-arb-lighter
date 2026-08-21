@@ -57,6 +57,9 @@ exports.settings = pgTable('arb_settings', {
   exit_spread_bps: doublePrecision('exit_spread_bps').notNull().default(1),
   max_hold_ticks: integer('max_hold_ticks').notNull().default(20),
   auto_execute: boolean('auto_execute').notNull().default(true),
+  // Start-simple controls: trade only one market, hold at most N positions at once.
+  focus_symbol: text('focus_symbol').notNull().default(''),
+  max_concurrent_tasks: integer('max_concurrent_tasks').notNull().default(1),
   background_enabled: boolean('background_enabled').notNull().default(true),
   scan_interval_sec: integer('scan_interval_sec').notNull().default(8),
   scan_market_limit: integer('scan_market_limit').notNull().default(24),

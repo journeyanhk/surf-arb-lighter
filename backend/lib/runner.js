@@ -155,6 +155,8 @@ async function scanTick(preloaded) {
       max_slippage_bps: s.max_slippage_bps,
       dry_run: s.dry_run,
       auto_execute: s.auto_execute,
+      focus_symbol: s.focus_symbol || '',
+      max_concurrent_tasks: s.max_concurrent_tasks,
       background_enabled: s.background_enabled,
       scan_interval_sec: s.scan_interval_sec,
       scan_market_limit: limit,

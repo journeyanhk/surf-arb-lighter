@@ -314,12 +314,13 @@ function fmtDuration(sec: number) {
 }
 
 function StatBar({ data, fetching }: { data: any; fetching: boolean }) {
+  const focus = (data?.focus_symbol || '').trim()
   return (
     <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
       <Stat label="运行模式" value={data?.dry_run ? '模拟 (DRY_RUN)' : '实盘'} tone={data?.dry_run ? 'gray' : 'red'} />
       <Stat label="实盘就绪" value={data?.live_ready ? '是' : '否'} tone={data?.live_ready ? 'green' : 'gray'} />
       <Stat label="价差阈值" value={`${fmt(data?.threshold_bps, 1)} bps`} />
-      <Stat label="最小样本" value={data?.min_samples ?? '-'} />
+      <Stat label="交易范围" value={focus || '全部币种'} tone={focus ? 'green' : 'gray'} extra={`最多 ${data?.max_concurrent_tasks ?? 1} 仓`} />
       <Stat label="当前机会" value={data?.opportunities_count ?? 0} tone={(data?.opportunities_count || 0) > 0 ? 'green' : 'gray'} extra={fetching ? '刷新中…' : ''} />
       <Stat label="后台运行" value={data?.background_enabled ? '开启' : '关闭'} tone={data?.background_enabled ? 'green' : 'gray'} extra={data?.background_enabled ? '关闭页面也采样' : '仅打开页面时'} />
     </div>
@@ -368,6 +369,14 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
       { key: 'rblighter_account_index', label: 'Account Index' },
       { key: 'rblighter_api_key_index', label: 'API Key Index' },
       { key: 'rblighter_api_private_key', label: 'API 私钥', secret: true, placeholder: '留空则不修改' },
+    ],
+  },
+  {
+    title: '运行范围（先单币种·单仓位跑通）',
+    note: '建议先选定 1 个币种、仓位上限设为 1，把完整流程跑顺、验证盈亏无误后再逐步放开。',
+    fields: [
+      { key: 'focus_symbol', label: '只交易此币种（留空=全部）', type: 'symbol' },
+      { key: 'max_concurrent_tasks', label: '同时最多持有仓位数', type: 'num' },
     ],
   },
   {
@@ -437,6 +446,14 @@ function Settings() {
     mutationFn: () => fetch(api('settings/test')).then((r) => r.json()),
   })
 
+  // Symbol list for the focus dropdown — reuse the live scan so users pick, not type.
+  const scan = useQuery({
+    queryKey: ['scan-symbols'],
+    queryFn: () => fetch(api('monitor/scan?limit=40')).then((r) => r.json()),
+    staleTime: 30000,
+  })
+  const symbols: string[] = ((scan.data?.rows || []) as any[]).map((r) => r.symbol).filter(Boolean)
+
   if (isLoading) return <Loading label="加载设置…" />
 
   const val = (k: string) => (k in form ? form[k] : data?.[k])
@@ -463,6 +480,20 @@ function Settings() {
                   >
                     {val(f.key) ? '开启' : '关闭'}
                   </button>
+                ) : f.type === 'symbol' ? (
+                  <select
+                    value={val(f.key) ?? ''}
+                    onChange={(e) => set(f.key, e.target.value)}
+                    className="w-full px-3 py-1.5 rounded-md border border-[#ddd] text-[13px] bg-white focus:border-[#111] outline-none"
+                  >
+                    <option value="">全部币种</option>
+                    {symbols.map((sym) => (
+                      <option key={sym} value={sym}>{sym}</option>
+                    ))}
+                    {val(f.key) && !symbols.includes(val(f.key)) && (
+                      <option value={val(f.key)}>{val(f.key)}（当前）</option>
+                    )}
+                  </select>
                 ) : (
                   <input
                     type={f.secret ? 'password' : f.type === 'num' ? 'number' : 'text'}
