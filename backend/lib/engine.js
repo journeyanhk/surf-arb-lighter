@@ -341,8 +341,16 @@ async function reconcileLive(t, row, s, set) {
   if (matched <= eps) {
     const filled = Math.max(filledBuy, filledSell)
     if (filled > eps) {
-      await set(`state='CLOSED', matched_size=0, pnl_usd=0, closed_at=now(), note=$1`, [
-        `单腿成交 ${filled.toFixed(6)}，已 reduce-only 平掉，未留敞口`,
+      // Single-leg fill: opened one taker leg then reduce-only closed it. Zero fee,
+      // but we crossed the book twice (buy at ask / sell at bid) -> a small spread+
+      // slippage cost. Record it honestly (~2× the cross buffer) so the dashboard
+      // total matches the venue's trade history instead of showing a fake 0.
+      const legPx = filledBuy > filledSell ? (t.buy_price || 0) : (t.sell_price || 0)
+      const roundTripBps = 2 * Math.max(Number(s.max_slippage_bps) || 0, 2)
+      const cost = -(filled * legPx * roundTripBps) / 10000
+      await set(`state='CLOSED', matched_size=0, pnl_usd=$1, closed_at=now(), note=$2`, [
+        cost,
+        `单腿成交 ${filled.toFixed(6)}，已 reduce-only 平掉，未留敞口（跨价成本约 ${fmt(cost, 4)}）`,
       ])
     } else {
       await set(`state='ERROR', matched_size=0, pnl_usd=0, closed_at=now(), note=$1`, [
