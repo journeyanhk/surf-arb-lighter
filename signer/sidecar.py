@@ -407,10 +407,17 @@ async def on_startup(app):
         log.info("  %s: ready=%s err=%s", k, v.ready, v.err)
         if v.configured:
             snap = await v.account_snapshot()
-            log.info("  %s 账户: index=%s status=%s 保证金=%s 可用=%s 持仓数=%s",
+            log.info("  %s 账户: index=%s status=%s 总权益=%s 保证金=%s 可用=%s 持仓数=%s",
                      k, snap.get("account_index"), snap.get("status"),
-                     snap.get("collateral"), snap.get("available_balance"),
-                     snap.get("open_positions"))
+                     snap.get("total_asset_value"), snap.get("collateral"),
+                     snap.get("available_balance"), snap.get("open_positions"))
+            # status!=1 或 保证金≈0 → 该账户无法开仓（未激活/资金不在交易保证金里）
+            try:
+                if int(snap.get("status") or 0) != 1 or float(snap.get("collateral") or 0) < 1:
+                    log.warning("  ⚠️ %s 账户不可交易：status=%s 保证金=%s（需 status=1 且资金在交易保证金里）",
+                                k, snap.get("status"), snap.get("collateral"))
+            except Exception:  # noqa
+                pass
 
 
 async def on_cleanup(app):
