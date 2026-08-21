@@ -145,26 +145,46 @@ class Venue:
 
     async def positions(self):
         """查真实持仓（公开账户接口，用于对账）。返回 {market_id: signed_size}。"""
-        url = f"{self.base_url}/api/v1/account?by=index&value={self.account_index}"
-        async with aiohttp.ClientSession() as sess:
-            async with sess.get(url, timeout=15) as r:
-                j = await r.json()
+        j = await self._account_json()
         out = {}
         for acc in (j.get("accounts") or []):
             for p in (acc.get("positions") or []):
                 mid = p.get("market_id")
                 if mid is None:
                     continue
-                # sign: 1=long, -1/2=short（不同版本字段名不一，做兼容）
+                # position 为无符号数量字符串；方向由 sign 决定：1=多, -1=空。
                 size = float(p.get("position", p.get("size", 0)) or 0)
                 sign = p.get("sign", p.get("side", 1))
                 try:
                     sign = int(sign)
                 except Exception:  # noqa
                     sign = 1
-                signed = size if sign in (1,) else -size
+                signed = size if sign >= 0 else -size
                 out[int(mid)] = signed
         return out
+
+    async def _account_json(self):
+        url = f"{self.base_url}/api/v1/account?by=index&value={self.account_index}"
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(url, timeout=15) as r:
+                return await r.json()
+
+    async def account_snapshot(self):
+        """账户资金/状态快照——用于排查“提交成功却没成交/没持仓”：多半是没保证金或 account_index 指错。"""
+        try:
+            j = await self._account_json()
+            acc = (j.get("accounts") or [{}])[0]
+            npos = len(acc.get("positions") or [])
+            return {
+                "account_index": acc.get("account_index", self.account_index),
+                "status": acc.get("status"),
+                "collateral": acc.get("collateral"),
+                "available_balance": acc.get("available_balance"),
+                "total_asset_value": acc.get("total_asset_value"),
+                "open_positions": npos,
+            }
+        except Exception as e:  # noqa
+            return {"error": str(e), "account_index": self.account_index}
 
     async def close(self):
         try:
@@ -222,12 +242,16 @@ async def auth_mw(request, handler):
 
 async def handle_health(request):
     venues = {}
-    for k, v in VENUES.items():
+    snaps = await asyncio.gather(
+        *[v.account_snapshot() if v.configured else _noop_snap() for v in VENUES.values()]
+    )
+    for (k, v), snap in zip(VENUES.items(), snaps):
         venues[k] = {
             "configured": v.configured,
             "ready": v.ready,
             "err": v.err,
             "markets": len(v.markets),
+            "account": snap,
         }
     return web.json_response({
         "ok": True,
@@ -235,6 +259,10 @@ async def handle_health(request):
         "max_notional_usd": MAX_NOTIONAL_USD,
         "venues": venues,
     })
+
+
+async def _noop_snap():
+    return None
 
 
 async def handle_order(request):
@@ -377,6 +405,12 @@ async def on_startup(app):
     log.info("边车启动完成，模式=%s，单笔上限=%.2f USD", mode, MAX_NOTIONAL_USD)
     for k, v in VENUES.items():
         log.info("  %s: ready=%s err=%s", k, v.ready, v.err)
+        if v.configured:
+            snap = await v.account_snapshot()
+            log.info("  %s 账户: index=%s status=%s 保证金=%s 可用=%s 持仓数=%s",
+                     k, snap.get("account_index"), snap.get("status"),
+                     snap.get("collateral"), snap.get("available_balance"),
+                     snap.get("open_positions"))
 
 
 async def on_cleanup(app):
