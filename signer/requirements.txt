@@ -1,0 +1,7 @@
+# 官方 Lighter 签名 SDK（含 C 扩展，需在 Linux x86_64 上安装）
+# 仓库: https://github.com/elliottech/lighter-python
+lighter-sdk
+
+# 官方 SDK 的运行依赖（一般会被自动拉取，这里显式钉住以防漏装）
+aiohttp
+pydantic

@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+frontend/dist/
+backend/dist/
+build/
+
+# Env & secrets (never commit real keys)
+.env
+.env.local
+.env.*.local
+**/.env
+!**/.env.example
+
+# Logs
+*.log
+.vulcan/
+.vulcan-error-reporter.js
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python sidecar
+signer/venv/
+signer/__pycache__/
+**/__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Misc
+outputs/
