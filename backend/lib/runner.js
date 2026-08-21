@@ -2,7 +2,7 @@
 // backend process, independent of whether any page is open. A single writer
 // (overlap-guarded) so opening multiple tabs never multiplies load.
 
-const { dbQuery } = require('@surf-ai/sdk/db')
+const { dbQuery } = require('../db')
 const { loadSettings } = require('../routes/settings')
 const { listOrderBooks, topOfBook, computeSpread } = require('./exchange')
 const { stepEngine } = require('./engine')

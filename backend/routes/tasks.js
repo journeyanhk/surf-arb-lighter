@@ -1,5 +1,5 @@
 const { Router } = require('express')
-const { dbQuery } = require('@surf-ai/sdk/db')
+const { dbQuery } = require('../db')
 const { summary } = require('../lib/engine')
 
 const router = Router()

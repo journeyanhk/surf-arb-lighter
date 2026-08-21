@@ -7,6 +7,7 @@
   "dependencies": {
     "@surf-ai/sdk": "1.0.5",
     "express": "4.22.1",
+    "pg": "^8.23.0",
     "undici": "^8.10.0"
   }
 }

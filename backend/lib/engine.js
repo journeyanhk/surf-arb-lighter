@@ -14,7 +14,7 @@
 //   ERROR   : both legs failed / no position created
 //   PAUSED  : ambiguous state (restart, or a live-path error) -> needs human eyes
 
-const { dbQuery } = require('@surf-ai/sdk/db')
+const { dbQuery } = require('../db')
 const sidecar = require('./sidecar')
 
 const ACTIVE_STATES = ['ENTERING', 'RECONCILING', 'HOLDING', 'EXITING', 'PAUSED']

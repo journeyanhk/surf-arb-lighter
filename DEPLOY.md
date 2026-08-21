@@ -79,10 +79,28 @@ sudo journalctl -u arb-sidecar -f
 `backend/.env`：
 ```
 BACKEND_PORT=3001
-SURF_API_KEY=<你的 Surf API Key>
+SURF_API_KEY=            # 用本地数据库时可留空
+DATABASE_URL=postgres://arb:yourpassword@127.0.0.1:5432/arb
 ARB_SIDECAR_URL=http://127.0.0.1:8787
 ARB_SIDECAR_TOKEN=<与 signer/.env 里 SIDECAR_TOKEN 完全一致>
 ```
+
+> **数据库说明**：本项目数据（设置/任务/采样）存 Postgres。设了 `DATABASE_URL` 就用你
+> VPS 本地的库，**完全自给自足、不依赖 Surf 托管库，`SURF_API_KEY` 可留空**。启动时若看到
+> 一行 “DB schema sync failed / Surf …” 的告警，那是 SDK 在尝试同步它自家的托管库，**无害可忽略**
+> ——你的数据走的是本地库（日志会打印 `[db] using LOCAL Postgres`）。
+
+### 先装本地 Postgres（Ubuntu/Debian 示例）
+```bash
+sudo apt update && sudo apt install -y postgresql
+sudo -u postgres psql -c "CREATE USER arb WITH PASSWORD 'yourpassword';"
+sudo -u postgres psql -c "CREATE DATABASE arb OWNER arb;"
+# 自测连通：
+psql "postgres://arb:yourpassword@127.0.0.1:5432/arb" -c '\dt'
+```
+建表由后端启动时**自动完成**（幂等迁移），无需手动执行 SQL。
+
+### 启动后端
 ```bash
 cd backend && bun install     # 或 npm install
 bun run server.js             # 生产可用 systemd/pm2 常驻
@@ -91,10 +109,10 @@ bun run server.js             # 生产可用 systemd/pm2 常驻
 `/etc/systemd/system/arb-backend.service` 同理（`ExecStart=/usr/bin/bun run server.js`，
 `EnvironmentFile=.../backend/.env`）。
 
-验证边车已连上：
+验证数据库 + 边车：
 ```bash
-curl -s http://127.0.0.1:3001/api/monitor/sidecar
-# configured:true 且 venues 均 ready:true 即成功
+curl -s http://127.0.0.1:3001/api/settings          # 返回配置 JSON = 本地库通了
+curl -s http://127.0.0.1:3001/api/monitor/sidecar   # configured:true 且 venues ready:true = 边车通了
 ```
 
 ---
