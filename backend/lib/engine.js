@@ -300,11 +300,15 @@ async function exitLive(t, row, s, set) {
   ])
 }
 
-// Maker close-out: rest reduce-only POST-ONLY orders at the passive touch on each
-// EXITING tick and watch real positions unwind. Post-only pays 0 maker fee. If the
-// remainder hasn't filled within maker_close_wait_ticks, cross it with taker IOC so
-// we never sit half-open indefinitely. reduce_only can't flip a position, so any
-// leftover resting orders become harmless no-ops once flat.
+// Maker close-out. Key insight: while BOTH legs are still open the position is
+// delta-neutral, so we can rest reduce-only POST-ONLY orders at the touch and wait
+// as long as we like (0 fee) — patience is nearly free. The ONLY danger is going
+// single-legged when one maker leg fills before the other; that leaves a directional
+// exposure. So each tick we:
+//   1) taker-hedge just the IMBALANCE (excess = |remLong-remShort|) to restore neutral,
+//   2) keep the still-hedged remainder resting as maker, re-quoted at the touch,
+//   3) only after maker_close_wait_ticks give up and taker-cross the balanced rest.
+// reduce_only can't flip a position, so stale resting orders are harmless no-ops.
 async function exitLiveMaker(t, row, s, set) {
   const buyV = venueTag(t.buy_venue)
   const sellV = venueTag(t.sell_venue)
@@ -316,56 +320,64 @@ async function exitLiveMaker(t, row, s, set) {
   const remLong = Math.max(0, (pbuy[t.buy_market_index] || 0) - (t.pre_buy_pos || 0))
   const remShort = Math.max(0, (t.pre_sell_pos || 0) - (psell[t.sell_market_index] || 0))
   const ticks = (t.exit_ticks || 0) + 1
+  const buf = crossBuffer(s)
 
-  // Both legs unwound -> fully closed at maker (0 fee).
+  // Fully unwound -> closed at maker (0 close fee).
   if (remLong <= eps && remShort <= eps) {
     const { pnl, note } = realizedPnl(t, s, false)
     await set(`state='CLOSED', exit_ticks=$1, pnl_usd=$2, closed_at=now(), note=$3`, [
-      ticks,
-      pnl,
-      `maker 挂单平仓全部成交：${note}`,
+      ticks, pnl, `maker 挂单平仓全部成交：${note}`,
     ])
     return
   }
 
-  const deadline = Math.max(1, Number(s.maker_close_wait_ticks) || 3)
-  if (ticks >= deadline) {
-    // Deadline hit: cross the remainder with taker IOC to close out for sure.
-    const buf = crossBuffer(s)
-    const jobs = []
-    if (remLong > eps) {
+  // (1) Imbalance = net directional exposure from one maker leg filling first.
+  //     Taker-hedge it back to neutral IMMEDIATELY — never sit single-legged.
+  const excess = Math.abs(remLong - remShort)
+  if (excess > eps) {
+    if (remLong > remShort) {
       const px = (bookPrice(row, t.buy_venue, 'bid') || t.buy_price) * (1 - buf)
-      jobs.push(sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: remLong, price: px, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 5 }))
-    }
-    if (remShort > eps) {
+      await sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: excess, price: px, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 5 })
+    } else {
       const px = (bookPrice(row, t.sell_venue, 'ask') || t.sell_price) * (1 + buf)
-      jobs.push(sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: remShort, price: px, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 6 }))
+      await sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: excess, price: px, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 6 })
     }
-    await Promise.all(jobs)
+  }
+
+  const balanced = Math.min(remLong, remShort) // still-hedged remainder (safe to wait)
+  if (balanced <= eps) {
+    // Only imbalance was left; the taker hedge above flattens it. Re-check next tick.
+    await set(`exit_ticks=$1, note=$2`, [ticks, `maker 平仓：已 taker 补平不对冲的 ${excess.toFixed(6)}，等待确认`])
+    return
+  }
+
+  const deadline = Math.max(1, Number(s.maker_close_wait_ticks) || 20)
+  if (ticks >= deadline) {
+    // Patience exhausted: cross the hedged remainder with taker IOC on both legs.
+    const pxSell = (bookPrice(row, t.buy_venue, 'bid') || t.buy_price) * (1 - buf)
+    const pxBuy = (bookPrice(row, t.sell_venue, 'ask') || t.sell_price) * (1 + buf)
+    await Promise.all([
+      sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: balanced, price: pxSell, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 7 }),
+      sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: balanced, price: pxBuy, reduce_only: true, tif: 'ioc', client_order_index: t.id * 10 + 8 }),
+    ])
     const { pnl, note } = realizedPnl(t, s, true)
     await set(`state='CLOSED', exit_ticks=$1, pnl_usd=$2, closed_at=now(), note=$3`, [
-      ticks,
-      pnl,
-      `maker 平仓超时(${ticks} ticks)，剩余以 taker 补平：${note}`,
+      ticks, pnl, `maker 平仓超时(${ticks} ticks)，剩余 taker 补平：${note}`,
     ])
     return
   }
 
-  // (Re)post passive reduce-only maker orders at the touch for whatever remains.
-  // Sell the long at the ask, buy back the short at the bid — neither crosses.
-  const jobs = []
-  if (remLong > eps) {
-    const px = bookPrice(row, t.buy_venue, 'ask') || t.buy_price
-    jobs.push(sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: remLong, price: px, reduce_only: true, tif: 'post_only', client_order_index: t.id * 10000 + ticks * 10 + 1 }))
-  }
-  if (remShort > eps) {
-    const px = bookPrice(row, t.sell_venue, 'bid') || t.sell_price
-    jobs.push(sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: remShort, price: px, reduce_only: true, tif: 'post_only', client_order_index: t.id * 10000 + ticks * 10 + 2 }))
-  }
-  await Promise.all(jobs)
+  // (2) Re-quote passive reduce-only maker orders at the touch for the hedged rest.
+  //     Sell the long at the ask, buy back the short at the bid — neither crosses.
+  const pxSell = bookPrice(row, t.buy_venue, 'ask') || t.buy_price
+  const pxBuy = bookPrice(row, t.sell_venue, 'bid') || t.sell_price
+  await Promise.all([
+    sidecar.placeOrder({ venue: buyV, market_index: t.buy_market_index, side: 'sell', size: balanced, price: pxSell, reduce_only: true, tif: 'post_only', client_order_index: t.id * 100000 + ticks * 10 + 1 }),
+    sidecar.placeOrder({ venue: sellV, market_index: t.sell_market_index, side: 'buy', size: balanced, price: pxBuy, reduce_only: true, tif: 'post_only', client_order_index: t.id * 100000 + ticks * 10 + 2 }),
+  ])
   await set(`exit_ticks=$1, note=$2`, [
     ticks,
-    `maker 挂单平仓中(${ticks}/${deadline})：待成交 多 ${remLong.toFixed(6)} / 空 ${remShort.toFixed(6)}`,
+    `maker 挂单平仓中(${ticks}/${deadline})：对冲挂单 ${balanced.toFixed(6)}${excess > eps ? `，taker 补平不平衡 ${excess.toFixed(6)}` : ''}`,
   ])
 }
 

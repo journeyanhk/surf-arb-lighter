@@ -49,7 +49,7 @@ exports.settings = pgTable('arb_settings', {
   // Maker close-out: rest reduce-only post-only orders (0 fee) instead of taker
   // IOC when unwinding a hedged position. Falls back to taker after the wait window.
   maker_close: boolean('maker_close').notNull().default(false),
-  maker_close_wait_ticks: integer('maker_close_wait_ticks').notNull().default(3),
+  maker_close_wait_ticks: integer('maker_close_wait_ticks').notNull().default(20),
   exit_spread_bps: doublePrecision('exit_spread_bps').notNull().default(1),
   max_hold_ticks: integer('max_hold_ticks').notNull().default(20),
   auto_execute: boolean('auto_execute').notNull().default(true),

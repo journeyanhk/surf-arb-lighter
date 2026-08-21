@@ -36,7 +36,7 @@ const DEFAULTS = {
   reduce_only: true,
   ioc_orders: true,
   maker_close: false,
-  maker_close_wait_ticks: 3,
+  maker_close_wait_ticks: 20,
   exit_spread_bps: 1,
   max_hold_ticks: 20,
   auto_execute: true,
