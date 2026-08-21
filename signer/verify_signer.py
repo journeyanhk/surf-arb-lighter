@@ -70,7 +70,9 @@ async def verify_venue(name, base_url, account_index, api_key_index, private_key
 
     # 2) 关键：只签名不发送，验证该 venue 能否签出合法订单
     try:
-        tx_info = client.sign_create_order(
+        # IOC 订单必须 order_expiry=0（DEFAULT_IOC_EXPIRY）；默认 -1 是 28 天限价单用的，
+        # 传给 IOC 会被原生签名器拒为 "OrderExpiry is invalid"。
+        result = client.sign_create_order(
             market_index=int(market_index),
             client_order_index=0,
             base_amount=1,          # 极小值，仅用于签名，不会发送
@@ -79,17 +81,35 @@ async def verify_venue(name, base_url, account_index, api_key_index, private_key
             order_type=client.ORDER_TYPE_LIMIT,
             time_in_force=client.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
             reduce_only=False,
+            order_expiry=0,
         )
+        # sign_create_order 返回 4 元组 (tx_type, tx_info, tx_hash, err)；err 在 index 3。
+        # 成功时 err 为 None；失败时 SDK 不抛异常而是把错误塞进 err 字段。
+        err = result[3] if isinstance(result, (tuple, list)) and len(result) >= 4 else None
+        if err:
+            print(f"  [失败] sign_create_order 返回错误：{err}")
+            print(f"         => {name} 该腿签名未通过（实盘不可行，先排查参数/密钥）")
+            return False
         print(f"  [成功] sign_create_order 签名成功 ✓  该 venue 可用官方 SDK 签名")
         # 注意已知问题 #98：部分版本 sign_create_order 会忽略 market_index，
         # 请核对返回 tx 里的 MarketIndex 是否等于你传入的值。
-        preview = str(tx_info)
+        preview = str(result[1])
         print(f"  tx 预览: {preview[:180]}{'...' if len(preview) > 180 else ''}")
         return True
     except Exception as e:
-        print(f"  [失败] sign_create_order 出错：{e}")
+        print(f"  [失败] sign_create_order 抛出异常：{e}")
         print(f"         => {name} 可能无法用官方 SDK 签名（实盘该腿不可行）")
         return False
+    finally:
+        # 关闭 SDK 内部的 aiohttp 会话，避免 "Unclosed client session" 告警
+        try:
+            close = getattr(client, "close", None)
+            if close:
+                res = close()
+                if asyncio.iscoroutine(res):
+                    await res
+        except Exception:
+            pass
 
 
 async def main():
