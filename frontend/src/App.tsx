@@ -409,6 +409,18 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
     ],
   },
   {
+    title: '资金费套利（路线 A · 主引擎）',
+    note: '对冲收取两所资金费差：做空费率高的一边、做多低的一边，持仓吃费、费差收敛才平。低频、少折腾。自动执行默认关闭，先手动开 1 单验证。',
+    fields: [
+      { key: 'funding_auto_execute', label: '自动执行资金费套利（默认关闭，手动验证后再开）', type: 'bool' },
+      { key: 'funding_enter_bps_hr', label: '开仓费差阈值（每小时 bps，≥ 此值才开）', type: 'num' },
+      { key: 'funding_exit_bps_hr', label: '平仓费差阈值（每小时 bps，费差 ≤ 此值即平）', type: 'num' },
+      { key: 'funding_symbols', label: '只做这些币种（逗号分隔，如 BTC,ETH,SOL；留空=任意可配对）', placeholder: 'BTC,ETH,SOL' },
+      { key: 'funding_max_positions', label: '资金费仓位上限（同时最多持有）', type: 'num' },
+      { key: 'funding_max_hold_hours', label: '最长持仓小时数（安全上限，到点强制平仓）', type: 'num' },
+    ],
+  },
+  {
     title: '网络代理',
     note: '所有交易所接口将通过此代理访问。支持 http/https/socks5，可包含账号密码。留空则直连。',
     fields: [
@@ -424,28 +436,72 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
   },
 ]
 
-/* ---------------- Funding (资金费差监控 · 只看不交易) ---------------- */
+/* ---------------- Funding (资金费套利 · 路线 A 主引擎) ---------------- */
 
 function Funding() {
+  const client = useQueryClient()
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ['funding'],
     queryFn: () => fetch(api('monitor/funding')).then((r) => r.json()),
     refetchInterval: 30000,
   })
+  const scan = useQuery({
+    queryKey: ['scan-lite'],
+    queryFn: () => fetch(api('monitor/scan?limit=30')).then((r) => r.json()),
+    refetchInterval: 15000,
+    staleTime: 10000,
+  })
+  const open = useMutation({
+    mutationFn: (symbol: string) =>
+      fetch(api('monitor/funding/open'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol }),
+      }).then((r) => r.json()),
+    onSuccess: (r) => {
+      if (r?.error) alert(`开仓未成功：${r.error}`)
+      client.invalidateQueries({ queryKey: ['tasks'] })
+      client.invalidateQueries({ queryKey: ['funding'] })
+    },
+    onError: (e: any) => alert(`开仓请求失败：${String(e?.message || e)}`),
+  })
+
   if (isLoading) return <Loading label="正在读取两所资金费率…" />
   if (error || data?.error) return <ErrorBox msg={data?.error || String(error)} />
   const rows = (data?.rows || []) as any[]
   const best = rows[0]
+  const enter = Number(data?.enter_bps_hr ?? 0)
+  const exit = Number(data?.exit_bps_hr ?? 0)
+  const live = !!scan.data?.live_ready
+  const dryRun = scan.data?.dry_run !== false
+
+  const onOpen = (r: any) => {
+    const mode = live && !dryRun ? '⚠️ 实盘真实下单' : '模拟（DRY_RUN，不动真钱）'
+    const msg = `确认对 ${r.symbol} 建立资金费对冲仓位？\n\n做空 ${r.short_venue} · 做多 ${r.long_venue}\n当前费差 ${fmt(r.diff_bps_hr, 2)} bps/时\n\n执行模式：${mode}`
+    if (window.confirm(msg)) open.mutate(r.symbol)
+  }
 
   return (
     <div className="space-y-6">
       <div className="rounded-lg bg-[#eff6ff] border border-[#bfdbfe] px-4 py-3 text-[13px] text-[#1e40af]">
-        <div className="font-medium">资金费套利（carry）· 只看不交易</div>
+        <div className="font-medium">资金费套利（carry）· 路线 A 主引擎</div>
         <div className="text-[#3b5b9a] mt-1 leading-relaxed">
-          永续合约每 <b>1 小时</b>结算一次资金费（正值=多头付空头）。两所同币费率不同 →
-          <b>在费率高的一边做空（收费）、低的一边做多（少付/收费）</b>，仓位对冲不吃价格方向，靠费差一点点累积。
-          下表按“每小时费差”从大到小排序，先确认利差真实、够大，再考虑是否执行。
+          永续每 <b>1 小时</b>结算资金费（正值=多头付空头）。两所同币费率不同 →
+          <b>在费率高的一边做空（收费）、低的一边做多（少付/收费）</b>，仓位对冲不吃价格方向，靠费差慢慢累积。
+          <b>持仓吃费、费差收敛（≤ 平仓阈值）才平仓</b>，低频少折腾。下面点「开仓」手动建仓，或在设置里打开「自动执行」。
         </div>
+      </div>
+
+      {/* 执行状态条 */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 bg-white border border-[#e5e5e5] rounded-lg px-4 py-3 text-[12px]">
+        <span className="flex items-center gap-2">
+          <span className={`inline-block w-2 h-2 rounded-full ${live && !dryRun ? 'bg-red-500' : 'bg-gray-300'}`} />
+          <span className="font-medium text-[13px]">{live && !dryRun ? '实盘模式' : '模拟模式（DRY_RUN）'}</span>
+        </span>
+        <HealthItem label="开仓阈值" value={`≥ ${fmt(enter, 2)} bps/时`} />
+        <HealthItem label="平仓阈值" value={`≤ ${fmt(exit, 2)} bps/时`} />
+        <HealthItem label="自动执行" value={data?.funding_auto_execute ? '开启' : '关闭（手动）'} warn={!data?.funding_auto_execute ? false : false} />
+        {data?.venue_errors?.length ? <span className="text-amber-600 truncate max-w-[320px]" title={data.venue_errors.join(' | ')}>部分源异常：{data.venue_errors.join(' | ')}</span> : null}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -455,9 +511,11 @@ function Funding() {
         <MiniStat label="最佳年化(简单)" value={best ? `${fmt(best.apr_pct, 1)}%` : '-'} tone="green" />
       </div>
 
+      <FundingPositions />
+
       <Card
         title="两所资金费差（按每小时费差排序）"
-        subtitle={`每 30 秒刷新 · 费率为每小时值 · ${data?.updated_at ? new Date(data.updated_at).toLocaleTimeString() : ''}${isFetching ? ' · 刷新中…' : ''}`}
+        subtitle={`每 30 秒刷新 · 费率为每小时值 · 达标(≥${fmt(enter, 2)}bps)行高亮 · ${data?.updated_at ? new Date(data.updated_at).toLocaleTimeString() : ''}${isFetching ? ' · 刷新中…' : ''}`}
       >
         <div className="overflow-x-auto">
           <table className="w-full text-[13px]">
@@ -470,11 +528,12 @@ function Funding() {
                 <Th>套利方向（对冲）</Th>
                 <Th right>日化</Th>
                 <Th right>年化(简单)</Th>
+                <Th right>操作</Th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => (
-                <tr key={r.symbol} className="border-b border-[#f3f3f3]">
+                <tr key={r.symbol} className={`border-b border-[#f3f3f3] ${r.tradeable ? 'bg-[#f0fdf4]' : ''}`}>
                   <Td className="font-medium">{r.symbol}</Td>
                   <Td right mono className={r.lighter_bps_hr >= 0 ? 'text-[#555]' : 'text-red-500'}>{fmt(r.lighter_bps_hr, 2)}</Td>
                   <Td right mono className={r.rblighter_bps_hr >= 0 ? 'text-[#555]' : 'text-red-500'}>{fmt(r.rblighter_bps_hr, 2)}</Td>
@@ -486,10 +545,24 @@ function Funding() {
                   </Td>
                   <Td right mono>{fmt(r.daily_pct, 3)}%</Td>
                   <Td right mono>{fmt(r.apr_pct, 1)}%</Td>
+                  <Td right>
+                    <button
+                      onClick={() => onOpen(r)}
+                      disabled={open.isPending}
+                      className={`px-2.5 py-0.5 rounded border text-[12px] disabled:opacity-40 ${
+                        r.tradeable
+                          ? 'bg-[#16a34a] text-white border-[#16a34a] hover:bg-[#15803d]'
+                          : 'bg-white text-[#555] border-[#ddd] hover:border-[#999]'
+                      }`}
+                      title={r.tradeable ? '费差达标，建议开仓' : '费差未达开仓阈值，仍可手动开'}
+                    >
+                      开仓
+                    </button>
+                  </Td>
                 </tr>
               ))}
               {!rows.length && (
-                <tr><td colSpan={7} className="py-6 text-center text-[#999]">暂无数据（可能两所暂未返回资金费）</td></tr>
+                <tr><td colSpan={8} className="py-6 text-center text-[#999]">暂无数据（可能两所暂未返回资金费）</td></tr>
               )}
             </tbody>
           </table>
@@ -497,10 +570,87 @@ function Funding() {
       </Card>
 
       <div className="text-[12px] text-[#999] leading-relaxed">
-        风险提示：① 资金费每小时会变，费差可能收窄甚至反向，需持续监控；② 年化为简单外推（费差 × 24 × 365），
-        并非锁定收益；③ 建仓/平仓仍有跨价成本，费差需覆盖开平两次成本才净赚；④ 此页仅监控，不下任何单。
+        风险提示：① 资金费每小时会变，费差可能收窄甚至反向，持仓期间引擎会持续监控、费差 ≤ 平仓阈值即自动平仓；
+        ② 年化为简单外推（费差 × 24 × 365），并非锁定收益；③ 建仓/平仓各有一次跨价+手续费成本，费差需覆盖开平两次成本才净赚，
+        故开仓阈值应明显高于平仓阈值；④ 模拟模式下「开仓」只写模拟仓位，不动真钱；实盘模式请先小额单币验证。
       </div>
     </div>
+  )
+}
+
+// Active funding-carry positions (reuses /tasks, filtered to strategy='funding').
+function FundingPositions() {
+  const client = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['tasks'],
+    queryFn: () => fetch(api('tasks')).then((r) => r.json()),
+    refetchInterval: 8000,
+  })
+  const act = useMutation({
+    mutationFn: ({ id, op }: { id: number; op: string }) =>
+      fetch(api(`tasks/${id}/${op}`), { method: 'POST' }).then((r) => r.json()),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['tasks'] }),
+  })
+  const clearHistory = useMutation({
+    mutationFn: () => fetch(api('tasks/history'), { method: 'DELETE' }).then((r) => r.json()),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['tasks'] }),
+  })
+  const all = (data?.tasks || []) as any[]
+  const tasks = all.filter((t) => t.strategy === 'funding')
+  if (!tasks.length) return null
+  const hasHistory = tasks.some((t) => t.state === 'CLOSED' || t.state === 'ERROR')
+
+  return (
+    <Card title="资金费对冲持仓" subtitle="做多低费一边 + 做空高费一边，持仓吃费；费差收敛或到最长持仓即自动平仓。可手动平仓。">
+      <div className="overflow-x-auto">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left text-[#999] border-b border-[#eee]">
+              <Th>币种</Th><Th>方向</Th><Th right>撮合量</Th><Th right>入场费差(bps/时)</Th>
+              <Th right>盈亏(USD)</Th><Th>状态</Th><Th>说明</Th><Th right>操作</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {tasks.map((t) => {
+              const meta = STATE_META[t.state] || { label: t.state, tone: 'light' as const }
+              const active = ACTIVE.includes(t.state)
+              return (
+                <tr key={t.id} className="border-b border-[#f3f3f3]">
+                  <Td className="font-medium">{t.symbol}{t.exec_mode === 'live' ? <span className="ml-1 text-[10px] text-red-500">实盘</span> : <span className="ml-1 text-[10px] text-[#bbb]">模拟</span>}</Td>
+                  <Td><span className="text-emerald-600">多 {t.buy_venue}</span><span className="text-[#bbb]"> · </span><span className="text-red-500">空 {t.sell_venue}</span></Td>
+                  <Td right mono>{t.matched_size ? Number(t.matched_size).toFixed(4) : '-'}</Td>
+                  <Td right mono className="text-emerald-600">{t.entry_funding_bps_hr == null ? '-' : fmt(t.entry_funding_bps_hr, 2)}</Td>
+                  <Td right mono className={t.pnl_usd == null ? '' : t.pnl_usd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
+                    {t.pnl_usd == null ? '-' : Number(t.pnl_usd).toFixed(3)}
+                  </Td>
+                  <Td><Badge tone={meta.tone}>{meta.label}</Badge></Td>
+                  <Td className="text-[#888] max-w-[300px] truncate" title={t.note}>{t.note}</Td>
+                  <Td right>
+                    {active ? (
+                      <div className="flex gap-1 justify-end">
+                        {(t.state === 'HOLDING' || t.state === 'PAUSED') && (
+                          <MiniBtn onClick={() => act.mutate({ id: t.id, op: 'close' })}>平仓</MiniBtn>
+                        )}
+                        {t.state === 'PAUSED' && (
+                          <MiniBtn onClick={() => act.mutate({ id: t.id, op: 'resume' })}>恢复</MiniBtn>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-[#ccc]">—</span>
+                    )}
+                  </Td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      {hasHistory && (
+        <div className="mt-3 text-right">
+          <MiniBtn onClick={() => clearHistory.mutate()}>清空历史记录</MiniBtn>
+        </div>
+      )}
+    </Card>
   )
 }
 

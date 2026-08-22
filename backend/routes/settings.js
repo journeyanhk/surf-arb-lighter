@@ -42,6 +42,12 @@ const DEFAULTS = {
   exit_spread_bps: 1,
   max_hold_ticks: 20,
   auto_execute: true,
+  funding_auto_execute: false,
+  funding_enter_bps_hr: 1.0,
+  funding_exit_bps_hr: 0.2,
+  funding_symbols: '',
+  funding_max_positions: 1,
+  funding_max_hold_hours: 72,
   focus_symbol: '',
   scan_symbols: '',
   max_concurrent_tasks: 1,
@@ -62,6 +68,10 @@ const NUMERIC_MIN = {
   taker_fee_bps: 0, // 单边 taker 手续费；用于 PnL 计算，允许 0
   exit_spread_bps: 0,
   max_hold_ticks: 1,
+  funding_enter_bps_hr: 0, // 每小时费差 ≥ 此值才开仓（bps）
+  funding_exit_bps_hr: 0, // 每小时费差 ≤ 此值即平仓（bps）
+  funding_max_positions: 1, // 至少允许 1 个资金费仓位
+  funding_max_hold_hours: 1, // 安全持仓上限（小时）
   maker_close_wait_ticks: 1, // 至少等 1 个 tick 再回退 taker
   maker_open_wait_ticks: 1, // 至少等 1 个 tick 再撤单放弃
   max_concurrent_tasks: 1, // 至少允许 1 个仓位

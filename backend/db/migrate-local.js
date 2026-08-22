@@ -130,6 +130,15 @@ const STATEMENTS = [
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS sell_ack text`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS entry_ticks integer NOT NULL DEFAULT 0`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS exit_ticks integer NOT NULL DEFAULT 0`,
+  `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS strategy text NOT NULL DEFAULT 'spread'`,
+  `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS entry_funding_bps_hr double precision`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_auto_execute boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_enter_bps_hr double precision NOT NULL DEFAULT 1.0`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_exit_bps_hr double precision NOT NULL DEFAULT 0.2`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_symbols text NOT NULL DEFAULT ''`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_max_positions integer NOT NULL DEFAULT 1`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_max_hold_hours double precision NOT NULL DEFAULT 72`,
+
 
   // Ensure the single settings row exists.
   `INSERT INTO arb_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,

@@ -1,7 +1,8 @@
 const { Router } = require('express')
 const { dbQuery } = require('../db')
-const { getSnapshot, getHealth } = require('../lib/runner')
-const { fundingRates } = require('../lib/exchange')
+const { getSnapshot, getHealth, commonMarkets } = require('../lib/runner')
+const { getFundingMap, bestCarry, carryBpsHr } = require('../lib/funding')
+const { openFundingTask } = require('../lib/engine')
 const { loadSettings } = require('./settings')
 
 const router = Router()
@@ -64,34 +65,78 @@ router.get('/funding', async (_req, res) => {
   try {
     if (fundingCache.data && Date.now() - fundingCache.at < 30000) return res.json(fundingCache.data)
     const s = await loadSettings()
-    const [lf, rf] = await Promise.all([
-      fundingRates(s.lighter_base_url, s.proxy_url),
-      fundingRates(s.rblighter_base_url, s.proxy_url),
-    ])
+    const map = await getFundingMap(s)
+    if (!map.bySymbol.size && map.errors.length) {
+      return res.status(502).json({ error: map.errors.join(' | ') })
+    }
+    const enter = Number(s.funding_enter_bps_hr) || 0
+    const exit = Number(s.funding_exit_bps_hr) || 0
+    const wl = new Set(
+      String(s.funding_symbols || '')
+        .split(/[,\s]+/)
+        .map((x) => x.trim().toUpperCase())
+        .filter(Boolean)
+    )
     const rows = []
-    for (const [sym, l] of lf) {
-      const r = rf.get(sym)
-      if (!r) continue // only symbols listed on BOTH venues are tradeable as a pair
-      const lighter = l.rate
-      const rblighter = r.rate
-      const diffBpsHr = Math.abs(lighter - rblighter) * 10000 // hourly carry, bps
-      // Earn funding: short the higher-rate leg (shorts receive), long the lower.
-      const shortHigher = lighter > rblighter
+    for (const [sym, pair] of map.bySymbol) {
+      const bc = bestCarry(pair)
+      if (!bc) continue
       rows.push({
         symbol: sym,
-        lighter_bps_hr: lighter * 10000,
-        rblighter_bps_hr: rblighter * 10000,
-        diff_bps_hr: diffBpsHr,
-        short_venue: shortHigher ? 'Lighter' : 'RBLighter',
-        long_venue: shortHigher ? 'RBLighter' : 'Lighter',
-        daily_pct: (diffBpsHr / 100) * 24, // bps/hr -> %/day
-        apr_pct: (diffBpsHr / 100) * 24 * 365, // -> %/year (simple, no compounding)
+        lighter_bps_hr: bc.lighter_bps_hr,
+        rblighter_bps_hr: bc.rblighter_bps_hr,
+        diff_bps_hr: bc.diff_bps_hr,
+        short_venue: bc.short_venue,
+        long_venue: bc.long_venue,
+        daily_pct: (bc.diff_bps_hr / 100) * 24,
+        apr_pct: (bc.diff_bps_hr / 100) * 24 * 365,
+        in_whitelist: wl.size ? wl.has(sym) : true,
+        tradeable: bc.diff_bps_hr >= enter && (!wl.size || wl.has(sym)),
       })
     }
     rows.sort((a, b) => b.diff_bps_hr - a.diff_bps_hr)
-    const payload = { rows, count: rows.length, interval_hours: 1, updated_at: new Date().toISOString() }
+    const payload = {
+      rows,
+      count: rows.length,
+      interval_hours: 1,
+      enter_bps_hr: enter,
+      exit_bps_hr: exit,
+      funding_auto_execute: !!s.funding_auto_execute,
+      venue_errors: map.errors,
+      updated_at: new Date().toISOString(),
+    }
     fundingCache = { at: Date.now(), data: payload }
     res.json(payload)
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) })
+  }
+})
+
+// Manually open ONE funding-carry position for a symbol (view -> act button).
+// Determines short/long venue from the CURRENT rates, then hedges. Honors the
+// same dry-run / live gating as every other order path.
+router.post('/funding/open', async (req, res) => {
+  try {
+    const symbol = String(req.body?.symbol || '').trim().toUpperCase()
+    if (!symbol) return res.status(400).json({ error: '缺少 symbol' })
+    const s = await loadSettings()
+    // Guard: one active funding position per symbol.
+    const { rows: ex } = await dbQuery(
+      `SELECT id FROM arb_tasks WHERE symbol=$1 AND strategy='funding'
+       AND state IN ('ENTERING','RECONCILING','HOLDING','EXITING','PAUSED') LIMIT 1`,
+      [symbol]
+    )
+    if (ex.length) return res.status(409).json({ error: `${symbol} 已有进行中的资金费仓位` })
+    const map = await getFundingMap(s)
+    const pair = map.bySymbol.get(symbol)
+    if (!pair) return res.status(404).json({ error: `${symbol} 未在两所同时上架，无法配对` })
+    const common = await commonMarkets(s)
+    const ids = common.find((m) => String(m.symbol).toUpperCase() === symbol)
+    if (!ids) return res.status(404).json({ error: `找不到 ${symbol} 的市场索引` })
+    const r = await openFundingTask(symbol, s, pair, ids)
+    if (!r.ok) return res.status(400).json(r)
+    fundingCache = { at: 0, data: null } // let the panel reflect the new position promptly
+    res.json(r)
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) })
   }

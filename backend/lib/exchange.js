@@ -155,7 +155,21 @@ module.exports = { fetchJson, listOrderBooks, topOfBook, computeSpread, fundingR
 //   rate: decimal fraction PER 1-HOUR interval (0.0001 = 1bp). +rate => longs pay shorts.
 // Returns Map(symbolUpper -> { rate, market_id }).
 async function fundingRates(baseUrl, proxyUrl) {
-  const j = await fetchJson(`${baseUrl}/api/v1/funding-rates`, { proxyUrl })
+  const url = `${baseUrl}/api/v1/funding-rates`
+  let j
+  try {
+    j = await fetchJson(url, { proxyUrl })
+  } catch (e) {
+    // Funding data is PUBLIC read-only — the proxy is only needed for geo/auth
+    // on trading calls. Some proxies path-filter and reject un-whitelisted
+    // paths with 405/403/404. If we were going through a proxy, retry the
+    // request DIRECTLY before giving up.
+    if (proxyUrl) {
+      j = await fetchJson(url, {})
+    } else {
+      throw e
+    }
+  }
   const map = new Map()
   for (const f of j.funding_rates || []) {
     if (String(f.exchange || '').toLowerCase() !== 'lighter') continue

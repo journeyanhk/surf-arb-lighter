@@ -16,6 +16,8 @@
 
 const { dbQuery } = require('../db')
 const sidecar = require('./sidecar')
+const { topOfBook } = require('./exchange')
+const { getFundingMap, carryBpsHr, bestCarry } = require('./funding')
 
 const ACTIVE_STATES = ['ENTERING', 'RECONCILING', 'HOLDING', 'EXITING', 'PAUSED']
 const eps = 1e-9
@@ -131,6 +133,78 @@ async function openTask(r, s) {
       `${execMode === 'live' ? '实盘' : '模拟'} IOC 双腿开仓：买 ${r.best.buy_venue} / 卖 ${r.best.sell_venue}`,
     ]
   )
+}
+
+// ============================ FUNDING-CARRY OPEN ============================
+// Open a delta-neutral funding-carry position: LONG the lower-funding venue,
+// SHORT the higher-funding venue, to collect the hourly funding differential.
+// Reuses the SAME live open/reconcile/hold/exit path (strategy='funding' only
+// changes the entry trigger + the HOLDING exit condition). Fetches its own fresh
+// books so it never depends on the price-spread scan row.
+//   ids: { symbol, lighter_market_id, rblighter_market_id }
+async function openFundingTask(symbol, s, pair, ids) {
+  const bc = bestCarry(pair)
+  if (!bc || !(bc.diff_bps_hr > 0)) return { ok: false, error: '当前无有效费差' }
+  const longV = bc.long_venue
+  const shortV = bc.short_venue
+  const longTag = venueTag(longV)
+  const shortTag = venueTag(shortV)
+  const longBase = longTag === 'lighter' ? s.lighter_base_url : s.rblighter_base_url
+  const shortBase = shortTag === 'lighter' ? s.lighter_base_url : s.rblighter_base_url
+  const longMkt = longTag === 'lighter' ? ids.lighter_market_id : ids.rblighter_market_id
+  const shortMkt = shortTag === 'lighter' ? ids.lighter_market_id : ids.rblighter_market_id
+  if (!Number.isFinite(longMkt) || !Number.isFinite(shortMkt)) {
+    return { ok: false, error: '找不到该币种的市场索引' }
+  }
+  const [lb, sb] = await Promise.all([
+    topOfBook(longBase, longMkt, s.proxy_url),
+    topOfBook(shortBase, shortMkt, s.proxy_url),
+  ])
+  if (!lb || !sb) return { ok: false, error: '读取盘口失败（无法定价）' }
+  const buyPrice = lb.bestAsk // LONG leg buys at the ask
+  const sellPrice = sb.bestBid // SHORT leg sells at the bid
+  const notional = Number(s.order_notional_usd)
+  if (!Number.isFinite(notional) || notional <= 0) return { ok: false, error: '单笔名义金额无效' }
+  if (!Number.isFinite(buyPrice) || buyPrice <= 0) return { ok: false, error: '盘口价格无效' }
+  const size = notional / buyPrice
+  if (!Number.isFinite(size) || size <= 0) return { ok: false, error: '下单量无效' }
+  const live = liveEnabled(s)
+  const execMode = live ? 'live' : 'sim'
+  // Depth guard (live only): both legs' near-touch book must cover size × ratio.
+  if (live) {
+    const need = size * (Number(s.min_depth_ratio) > 0 ? Number(s.min_depth_ratio) : 1)
+    const buyDepth = Number(lb.askDepthBase)
+    const sellDepth = Number(sb.bidDepthBase)
+    if (!Number.isFinite(buyDepth) || !Number.isFinite(sellDepth) || buyDepth < need || sellDepth < need) {
+      return {
+        ok: false,
+        error: `盘口深度不足（需 ${need.toFixed(6)}，多腿 ${Number.isFinite(buyDepth) ? buyDepth.toFixed(4) : 'NA'} / 空腿 ${Number.isFinite(sellDepth) ? sellDepth.toFixed(4) : 'NA'}）`,
+      }
+    }
+  }
+  const { rows } = await dbQuery(
+    `INSERT INTO arb_tasks
+       (symbol, direction, strategy, state, buy_venue, sell_venue, buy_price, sell_price,
+        size, entry_spread_bps, entry_funding_bps_hr, dry_run, exec_mode,
+        buy_market_index, sell_market_index, note)
+     VALUES ($1,'funding','funding','ENTERING',$2,$3,$4,$5,$6,0,$7,$8,$9,$10,$11,$12)
+     RETURNING id`,
+    [
+      symbol,
+      longV,
+      shortV,
+      buyPrice,
+      sellPrice,
+      size,
+      bc.diff_bps_hr,
+      s.dry_run,
+      execMode,
+      longMkt,
+      shortMkt,
+      `${execMode === 'live' ? '实盘' : '模拟'}资金费对冲开仓：做多 ${longV} / 做空 ${shortV}，入场费差 ${bc.diff_bps_hr.toFixed(2)} bps/时`,
+    ]
+  )
+  return { ok: true, id: rows[0].id, exec_mode: execMode, short_venue: shortV, long_venue: longV, diff_bps_hr: bc.diff_bps_hr }
 }
 
 function setter(id) {
@@ -531,6 +605,7 @@ async function reconcileClose(t, s, set, filledBuy, filledSell, _live) {
 }
 
 async function holding(t, row, s, set) {
+  if (t.strategy === 'funding') return holdingFunding(t, s, set)
   const cur = currentNetBps(t, row, s)
   const ticks = t.hold_ticks + 1
   const converged = cur != null && cur <= s.exit_spread_bps
@@ -546,6 +621,47 @@ async function holding(t, row, s, set) {
   }
 }
 
+// Funding-carry HOLDING: we WANT to hold and collect funding. Exit only when the
+// edge is gone — current hourly carry (short_venue rate − long_venue rate) drops
+// to/below the exit threshold (or reverses), OR a safety max-hold time is hit.
+async function holdingFunding(t, s, set) {
+  const ticks = t.hold_ticks + 1
+  let carry = null
+  try {
+    const map = await getFundingMap(s)
+    carry = carryBpsHr(map.bySymbol.get(String(t.symbol).toUpperCase()), t.sell_venue, t.buy_venue)
+  } catch (_) {
+    /* funding read failed this tick — hold, retry next tick */
+  }
+  const hoursHeld = t.created_at ? (Date.now() - Date.parse(t.created_at)) / 3.6e6 : 0
+  const maxHours = Number(s.funding_max_hold_hours) || 72
+  const exitThresh = Number(s.funding_exit_bps_hr) || 0
+  const collapsed = carry != null && carry <= exitThresh
+  const timeout = hoursHeld >= maxHours
+  // Display-only accrued estimate: conservative midpoint of entry carry & exit
+  // threshold applied over the holding time. Real funding is settled on-venue.
+  const avgCarry = Math.max(0, ((Number(t.entry_funding_bps_hr) || 0) + exitThresh) / 2)
+  const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
+  const accrued = (notional * avgCarry * hoursHeld) / 10000
+  if (collapsed || timeout) {
+    await set(`state='EXITING', hold_ticks=$1, note=$2`, [
+      ticks,
+      collapsed
+        ? `费差收敛至 ${fmt2(carry)} bps/时（≤ 平仓阈值 ${fmt2(exitThresh)}），触发平仓`
+        : `资金费持仓超时（${hoursHeld.toFixed(1)}h ≥ ${maxHours}h），平仓退出`,
+    ])
+  } else {
+    await set(`hold_ticks=$1, note=$2`, [
+      ticks,
+      `资金费对冲持仓中：当前费差 ${carry == null ? '读取中' : fmt2(carry) + ' bps/时'}，已持 ${hoursHeld.toFixed(1)}h，预估累计 ${accrued >= 0 ? '+' : ''}${accrued.toFixed(3)} USD`,
+    ])
+  }
+}
+
+function fmt2(n) {
+  return Number.isFinite(n) ? n.toFixed(2) : '-'
+}
+
 function fmt(n) {
   return Number.isFinite(n) ? n.toFixed(1) : '-'
 }
@@ -557,6 +673,7 @@ function fmt(n) {
 //     close = 2 × taker_fee_bps if taker IOC, else 0 (maker post-only, 0 fee)
 // Still an ESTIMATE from intended spreads, not authed fills.
 function realizedPnl(t, s, closeTaker = !s.maker_close) {
+  if (t.strategy === 'funding') return realizedFundingPnl(t, s, closeTaker)
   const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
   const grossBps = (Number(t.entry_spread_bps) || 0) - (Number(t.exit_spread_bps) || 0)
   const takerFee = Number(s.taker_fee_bps) || 0
@@ -566,6 +683,24 @@ function realizedPnl(t, s, closeTaker = !s.maker_close) {
   const netBps = grossBps - feeBps
   const note = `名义 ${notional.toFixed(2)} USD，净 ${fmt(netBps)}bps（毛 ${fmt(grossBps)} − 手续费 ${fmt(feeBps)}${s.maker_open || !closeTaker ? '，含 maker 0 费腿' : ''}）`
   return { pnl: (notional * netBps) / 10000, note }
+}
+
+// Funding-carry realized PnL: accrued funding (conservative midpoint estimate)
+// minus the round-trip taker fees. Real funding settles on-venue; this is the
+// dashboard's indicative number.
+function realizedFundingPnl(t, s, closeTaker) {
+  const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
+  const hoursHeld = t.created_at ? (Date.now() - Date.parse(t.created_at)) / 3.6e6 : 0
+  const exitThresh = Number(s.funding_exit_bps_hr) || 0
+  const avgCarry = Math.max(0, ((Number(t.entry_funding_bps_hr) || 0) + exitThresh) / 2)
+  const accrued = (notional * avgCarry * hoursHeld) / 10000
+  const takerFee = Number(s.taker_fee_bps) || 0
+  const openFee = takerFee * (s.maker_open ? 1 : 2)
+  const closeFee = closeTaker ? takerFee * 2 : 0
+  const fees = (notional * (openFee + closeFee)) / 10000
+  const pnl = accrued - fees
+  const note = `名义 ${notional.toFixed(2)} USD，持 ${hoursHeld.toFixed(1)}h，预估累计资金费 ${accrued.toFixed(3)} − 手续费 ${fees.toFixed(3)} = ${pnl >= 0 ? '+' : ''}${pnl.toFixed(3)} USD`
+  return { pnl, note }
 }
 
 async function advance(t, row, s) {
@@ -617,7 +752,66 @@ async function stepEngine(rows, s) {
     activeCount++
   }
 
+  // Funding-carry auto-open (Route A main engine). Independent of the price-spread
+  // loop above: its own cap (funding_max_positions) and whitelist. Off by default.
+  if (s.funding_auto_execute) {
+    try {
+      await stepFundingOpen(s)
+    } catch (e) {
+      console.warn('[engine] 资金费自动开仓异常：', e.message || e)
+    }
+  }
+
   return summary()
+}
+
+// Scan the funding differential and open hedged carry positions for symbols whose
+// current hourly carry ≥ funding_enter_bps_hr, up to funding_max_positions. One
+// position per symbol; respects the funding whitelist. Called only when
+// funding_auto_execute is on.
+async function stepFundingOpen(s) {
+  const cap = Math.max(1, Number(s.funding_max_positions) || 1)
+  const { rows: cnt } = await dbQuery(
+    `SELECT count(*)::int AS n FROM arb_tasks WHERE strategy='funding' AND state = ANY($1)`,
+    [ACTIVE_STATES]
+  )
+  let n = cnt[0].n
+  if (n >= cap) return
+  const map = await getFundingMap(s)
+  if (!map.bySymbol.size) return
+  const wl = new Set(
+    String(s.funding_symbols || '')
+      .split(/[,\s]+/)
+      .map((x) => x.trim().toUpperCase())
+      .filter(Boolean)
+  )
+  const enter = Number(s.funding_enter_bps_hr) || 0
+  const cands = []
+  for (const [sym, pair] of map.bySymbol) {
+    if (wl.size && !wl.has(sym)) continue
+    const bc = bestCarry(pair)
+    if (!bc || bc.diff_bps_hr < enter) continue
+    cands.push({ sym, pair, diff: bc.diff_bps_hr })
+  }
+  cands.sort((a, b) => b.diff - a.diff)
+  if (!cands.length) return
+  // Market indices from the (cached) common-market list. Lazy require avoids the
+  // engine⇄runner circular import at module load.
+  const { commonMarkets } = require('./runner')
+  const common = await commonMarkets(s)
+  const idsBy = new Map(common.map((m) => [String(m.symbol).toUpperCase(), m]))
+  for (const c of cands) {
+    if (n >= cap) break
+    const { rows: ex } = await dbQuery(
+      `SELECT id FROM arb_tasks WHERE symbol=$1 AND strategy='funding' AND state = ANY($2) LIMIT 1`,
+      [c.sym, ACTIVE_STATES]
+    )
+    if (ex.length) continue
+    const ids = idsBy.get(c.sym)
+    if (!ids) continue
+    const r = await openFundingTask(c.sym, s, c.pair, ids)
+    if (r.ok) n++
+  }
 }
 
 async function summary() {
@@ -635,4 +829,4 @@ async function summary() {
   return rows[0]
 }
 
-module.exports = { stepEngine, summary, ACTIVE_STATES }
+module.exports = { stepEngine, summary, ACTIVE_STATES, openFundingTask }

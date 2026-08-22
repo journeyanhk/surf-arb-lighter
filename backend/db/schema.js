@@ -57,6 +57,17 @@ exports.settings = pgTable('arb_settings', {
   exit_spread_bps: doublePrecision('exit_spread_bps').notNull().default(1),
   max_hold_ticks: integer('max_hold_ticks').notNull().default(20),
   auto_execute: boolean('auto_execute').notNull().default(true),
+
+  // ---- Funding-carry strategy (Route A) ----
+  // Delta-neutral funding arbitrage: hold a hedged pair to collect the hourly
+  // funding-rate differential; exit only when the edge collapses. Low churn.
+  funding_auto_execute: boolean('funding_auto_execute').notNull().default(false),
+  funding_enter_bps_hr: doublePrecision('funding_enter_bps_hr').notNull().default(1.0), // open when carry ≥ this (bps/hr)
+  funding_exit_bps_hr: doublePrecision('funding_exit_bps_hr').notNull().default(0.2), // close when carry ≤ this (bps/hr)
+  funding_symbols: text('funding_symbols').notNull().default(''), // whitelist, e.g. "BTC,ETH,SOL"; empty = any paired
+  funding_max_positions: integer('funding_max_positions').notNull().default(1),
+  funding_max_hold_hours: doublePrecision('funding_max_hold_hours').notNull().default(72), // safety cap
+
   // Start-simple controls: trade only one market, hold at most N positions at once.
   focus_symbol: text('focus_symbol').notNull().default(''),
   // Optional scan whitelist (comma/space separated symbols, e.g. "BTC,ETH"). When
@@ -133,6 +144,11 @@ exports.tasks = pgTable('arb_tasks', {
   sell_ack: text('sell_ack'), // sidecar order response for the sell leg
   entry_ticks: integer('entry_ticks').notNull().default(0), // maker open-quote poll counter
   exit_ticks: integer('exit_ticks').notNull().default(0), // maker close-out poll counter
+
+  // ---- Strategy tag + funding-carry fields ----
+  strategy: text('strategy').notNull().default('spread'), // 'spread' | 'funding'
+  entry_funding_bps_hr: doublePrecision('entry_funding_bps_hr'), // hourly carry captured at open (funding tasks)
+
 
   created_at: timestamp('created_at').defaultNow(),
   updated_at: timestamp('updated_at').defaultNow(),

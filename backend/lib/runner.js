@@ -84,6 +84,29 @@ async function scanTick(preloaded) {
       ? all.filter((m) => wl.has(String(m.symbol).toUpperCase()))
       : all.slice(0, limit)
 
+    // Always include symbols of any ACTIVE task (spread OR funding) so held
+    // positions get fresh books every tick for accurate marketable exits.
+    try {
+      const { rows: act } = await dbQuery(
+        `SELECT DISTINCT symbol FROM arb_tasks
+         WHERE state IN ('ENTERING','RECONCILING','HOLDING','EXITING','PAUSED')`
+      )
+      if (act.length) {
+        const have = new Set(markets.map((m) => String(m.symbol).toUpperCase()))
+        for (const { symbol } of act) {
+          const up = String(symbol).toUpperCase()
+          if (have.has(up)) continue
+          const m = all.find((x) => String(x.symbol).toUpperCase() === up)
+          if (m) {
+            markets.push(m)
+            have.add(up)
+          }
+        }
+      }
+    } catch (_) {
+      /* non-fatal: fall back to the base scan set */
+    }
+
     const rows = await pool(markets, 2, async (m) => {
       try {
         const [l, r] = await Promise.all([
@@ -263,4 +286,4 @@ function start() {
   }
 }
 
-module.exports = { start, scanTick, getLatest, getSnapshot, getHealth }
+module.exports = { start, scanTick, getLatest, getSnapshot, getHealth, commonMarkets }
