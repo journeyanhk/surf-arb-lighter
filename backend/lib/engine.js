@@ -640,6 +640,15 @@ async function holdingFunding(t, s, set) {
   // threshold applied over the holding time. Real funding is settled on-venue.
   const avgCarry = Math.max(0, ((Number(t.entry_funding_bps_hr) || 0) + exitThresh) / 2)
   const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
+  // Persist the real hourly funding settlement into the ledger (one row per
+  // top-of-hour boundary crossed while held) so we can show a true accumulated
+  // tally instead of only the midpoint estimate. Uses the SAME live net carry
+  // the panel shows. No-op when carry couldn't be read this tick.
+  try {
+    await recordFundingSettlement(t, carry, notional)
+  } catch (_) {
+    /* ledger write is best-effort; never block the hold loop */
+  }
   const accrued = (notional * avgCarry * hoursHeld) / 10000
   // Round-trip taker fee (open both legs + close both legs), mirroring
   // realizedFundingPnl so the break-even guard uses the SAME cost model.
@@ -674,6 +683,30 @@ async function holdingFunding(t, s, set) {
 
 function fmt2(n) {
   return Number.isFinite(n) ? n.toFixed(2) : '-'
+}
+
+// Record the funding settled for a delta-neutral position at the most recent
+// top-of-hour boundary. Funding is credited to whoever holds the position AT the
+// hour mark, so we only settle a boundary that (a) is in the past and (b) is
+// strictly after entry. The unique (task_id, settled_hour) index makes this
+// idempotent — re-running within the same hour is a no-op. We record only the
+// single most-recent boundary (never backfill old hours with the current rate)
+// so every stored amount reflects the rate that was actually live at that hour.
+async function recordFundingSettlement(t, carry, notional) {
+  if (carry == null || !Number.isFinite(carry)) return
+  if (!Number.isFinite(notional) || notional <= 0) return
+  const entrySec = t.created_at ? Math.floor(Date.parse(t.created_at) / 1000) : null
+  if (!entrySec) return
+  const boundary = Math.floor(Date.now() / 1000 / 3600) * 3600
+  if (boundary <= entrySec) return // no full hour held across a settlement yet
+  const amount = (carry / 10000) * notional
+  await dbQuery(
+    `INSERT INTO arb_funding_ledger
+       (task_id, symbol, settled_hour, net_bps_hr, notional_usd, amount_usd)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (task_id, settled_hour) DO NOTHING`,
+    [t.id, t.symbol, boundary, carry, notional, amount]
+  )
 }
 
 function fmt(n) {

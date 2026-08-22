@@ -6,6 +6,8 @@ const {
   integer,
   doublePrecision,
   timestamp,
+  bigint,
+  uniqueIndex,
 } = require('drizzle-orm/pg-core')
 
 // Single-row (id=1) configuration mirroring the original .env surface.
@@ -154,3 +156,26 @@ exports.tasks = pgTable('arb_tasks', {
   updated_at: timestamp('updated_at').defaultNow(),
   closed_at: timestamp('closed_at'),
 })
+
+// Real funding settlements accrued while holding a delta-neutral funding-carry
+// position. One row per (task, hourly-settlement). Written by the engine at each
+// top-of-hour boundary using the SAME live net-carry the panel displays, so the
+// running tally is internally consistent with the rest of the app (no per-account
+// auth needed). amount_usd = net_bps_hr / 10000 * notional_usd  (signed).
+exports.funding_ledger = pgTable(
+  'arb_funding_ledger',
+  {
+    id: serial('id').primaryKey(),
+    task_id: integer('task_id').notNull(),
+    symbol: text('symbol').notNull(),
+    settled_hour: bigint('settled_hour', { mode: 'number' }).notNull(), // unix seconds of the settled hour boundary
+    net_bps_hr: doublePrecision('net_bps_hr').notNull(), // live net carry captured at settlement (bps/hr)
+    notional_usd: doublePrecision('notional_usd').notNull(),
+    amount_usd: doublePrecision('amount_usd').notNull(), // signed funding for this hour
+    created_at: timestamp('created_at').defaultNow(),
+  },
+  (t) => ({
+    // Never double-count the same hour for the same position.
+    uniq: uniqueIndex('arb_funding_ledger_task_hour').on(t.task_id, t.settled_hour),
+  })
+)

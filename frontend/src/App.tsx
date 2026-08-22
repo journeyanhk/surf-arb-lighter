@@ -513,6 +513,8 @@ function Funding() {
 
       <FundingPositions />
 
+      <FundingIncome />
+
       <Card
         title="两所资金费差（按每小时费差排序）"
         subtitle={`每 30 秒刷新 · 费率为每小时值 · 达标(≥${fmt(enter, 2)}bps)行高亮 · ${data?.updated_at ? new Date(data.updated_at).toLocaleTimeString() : ''}${isFetching ? ' · 刷新中…' : ''}`}
@@ -575,6 +577,77 @@ function Funding() {
         故开仓阈值应明显高于平仓阈值；④ 模拟模式下「开仓」只写模拟仓位，不动真钱；实盘模式请先小额单币验证。
       </div>
     </div>
+  )
+}
+
+// Real accumulated funding income — sums the hourly settlements the engine
+// records into the ledger while holding delta-neutral funding positions. This
+// is actual per-hour carry (net_bps/1e4 × notional at each settlement), not the
+// midpoint estimate, so the user no longer needs to export venue CSVs to know
+// how much funding they've truly banked.
+function FundingIncome() {
+  const { data } = useQuery({
+    queryKey: ['funding-income'],
+    queryFn: () => fetch(api('funding-income')).then((r) => r.json()),
+    refetchInterval: 15000,
+  })
+  const positions = (data?.positions || []) as any[]
+  const grand = Number(data?.grand_total_usd) || 0
+  const openTot = Number(data?.open_total_usd) || 0
+  const closedTot = Number(data?.closed_total_usd) || 0
+  const settlements = Number(data?.settlements) || 0
+  const money = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(4)} USD`
+  const tone = (n: number) => (n > 0 ? 'text-emerald-600' : n < 0 ? 'text-red-500' : 'text-[#888]')
+
+  return (
+    <Card
+      title="真实资金费累计"
+      subtitle="引擎在每个整点结算时，按当时实时费差 × 名义金额逐笔累加的真实资金费收入（不含价差盈亏）。每 15 秒刷新，无需再导出交易所 CSV。"
+    >
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <MiniStat label="累计资金费（全部）" value={money(grand)} tone={grand >= 0 ? 'green' : 'red'} />
+        <MiniStat label="持仓中累计" value={money(openTot)} tone={openTot >= 0 ? 'green' : 'red'} />
+        <MiniStat label="已平仓累计" value={money(closedTot)} tone={closedTot >= 0 ? 'green' : 'red'} />
+        <MiniStat label="结算次数（小时）" value={settlements} />
+      </div>
+      {positions.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="text-left text-[#999] border-b border-[#eee]">
+                <Th>币种</Th><Th>方向（对冲）</Th><Th right>名义(USD)</Th><Th right>结算次数</Th>
+                <Th right>均费差(bps/时)</Th><Th right>累计资金费(USD)</Th><Th>状态</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {positions.map((p) => (
+                <tr key={p.task_id} className="border-b border-[#f3f3f3]">
+                  <Td className="font-medium">{p.symbol}</Td>
+                  <Td>
+                    <span className="text-red-500">空 {p.short_venue}</span>
+                    <span className="text-[#bbb]"> · </span>
+                    <span className="text-emerald-600">多 {p.long_venue}</span>
+                  </Td>
+                  <Td right mono>{Number(p.notional_usd || 0).toFixed(2)}</Td>
+                  <Td right mono>{p.settlements}</Td>
+                  <Td right mono className={tone(Number(p.avg_bps_hr) || 0)}>{fmt(p.avg_bps_hr, 2)}</Td>
+                  <Td right mono className={tone(Number(p.total_usd) || 0)}>{money(Number(p.total_usd) || 0)}</Td>
+                  <Td>{p.is_open ? <Badge tone="green">持仓中</Badge> : <Badge tone="gray">已平仓</Badge>}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="py-4 text-[13px] text-[#999] leading-relaxed">
+          暂无结算记录。资金费按<b>整点</b>结算，持仓需跨过至少一个整点才会记入第一笔。开一单并持有到下一个整点后，这里就会开始累加。
+        </div>
+      )}
+      <div className="mt-3 text-[12px] text-[#999] leading-relaxed">
+        说明：此处只统计<b>资金费</b>本身（真金白银进账/倒付），不含开平仓的价差与滑点盈亏。要看含价差的整体盈亏，请看上方「资金费对冲持仓」的盈亏列。
+        数字自本功能上线后开始累加，之前的历史持仓不会回补。
+      </div>
+    </Card>
   )
 }
 
