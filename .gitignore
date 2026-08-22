@@ -41,3 +41,6 @@ outputs/
 # Embedded DB (PGlite) data
 backend/data/
 data/
+
+# 对账用的上传文件（截图/CSV），不入库
+uploads/
