@@ -636,25 +636,39 @@ async function holdingFunding(t, s, set) {
   const hoursHeld = t.created_at ? (Date.now() - Date.parse(t.created_at)) / 3.6e6 : 0
   const maxHours = Number(s.funding_max_hold_hours) || 72
   const exitThresh = Number(s.funding_exit_bps_hr) || 0
-  const collapsed = carry != null && carry <= exitThresh
-  const timeout = hoursHeld >= maxHours
   // Display-only accrued estimate: conservative midpoint of entry carry & exit
   // threshold applied over the holding time. Real funding is settled on-venue.
   const avgCarry = Math.max(0, ((Number(t.entry_funding_bps_hr) || 0) + exitThresh) / 2)
   const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
   const accrued = (notional * avgCarry * hoursHeld) / 10000
-  if (collapsed || timeout) {
-    await set(`state='EXITING', hold_ticks=$1, note=$2`, [
-      ticks,
-      collapsed
-        ? `费差收敛至 ${fmt2(carry)} bps/时（≤ 平仓阈值 ${fmt2(exitThresh)}），触发平仓`
-        : `资金费持仓超时（${hoursHeld.toFixed(1)}h ≥ ${maxHours}h），平仓退出`,
-    ])
+  // Round-trip taker fee (open both legs + close both legs), mirroring
+  // realizedFundingPnl so the break-even guard uses the SAME cost model.
+  const takerFee = Number(s.taker_fee_bps) || 0
+  const roundTripFee = (notional * (takerFee * (s.maker_open ? 1 : 2) + takerFee * 2)) / 10000
+  const feesCovered = accrued >= roundTripFee
+  const collapsed = carry != null && carry <= exitThresh
+  const reversed = carry != null && carry < 0 // now PAYING funding — bleed, cut it
+  const timeout = hoursHeld >= maxHours
+  // Break-even protected exit:
+  //  1. reversed → stop-loss immediately (holding longer only loses more).
+  //  2. collapsed AND accrued funding already covers the round-trip fee → lock in.
+  //  3. timeout → hard safety cap regardless of PnL.
+  // If the edge collapsed but fees aren't covered yet, KEEP HOLDING (as long as
+  // carry is still ≥ 0 we keep accruing toward break-even) so we never realize a
+  // fee-driven loss on a quiet market.
+  if (reversed || (collapsed && feesCovered) || timeout) {
+    const reason = reversed
+      ? `费差反转至 ${fmt2(carry)} bps/时（已转为倒付资金费），止损平仓`
+      : timeout
+        ? `资金费持仓超时（${hoursHeld.toFixed(1)}h ≥ ${maxHours}h），平仓退出`
+        : `费差收敛至 ${fmt2(carry)} bps/时且累计资金费已覆盖手续费，落袋平仓`
+    await set(`state='EXITING', hold_ticks=$1, note=$2`, [ticks, reason])
   } else {
-    await set(`hold_ticks=$1, note=$2`, [
-      ticks,
-      `资金费对冲持仓中：当前费差 ${carry == null ? '读取中' : fmt2(carry) + ' bps/时'}，已持 ${hoursHeld.toFixed(1)}h，预估累计 ${accrued >= 0 ? '+' : ''}${accrued.toFixed(3)} USD`,
-    ])
+    const note =
+      collapsed && !feesCovered
+        ? `费差已收敛(${carry == null ? '读取中' : fmt2(carry) + ' bps/时'})但累计资金费 ${accrued.toFixed(3)} 未覆盖手续费 ${roundTripFee.toFixed(3)}，继续持有等回本（已持 ${hoursHeld.toFixed(1)}h）`
+        : `资金费对冲持仓中：当前费差 ${carry == null ? '读取中' : fmt2(carry) + ' bps/时'}，已持 ${hoursHeld.toFixed(1)}h，预估累计 ${accrued >= 0 ? '+' : ''}${accrued.toFixed(3)} USD`
+    await set(`hold_ticks=$1, note=$2`, [ticks, note])
   }
 }
 
