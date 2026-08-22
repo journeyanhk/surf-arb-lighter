@@ -715,6 +715,22 @@ function Settings() {
     setForm((f) => ({ ...f, ...STABLE_PRESET }))
   }
 
+  // 美股代币资金费预设：周末/盘后代币化美股费差极大（CRCL/COIN/TSLA…）。
+  // 只把高费差美股代币拉进白名单、门槛抬到 ≥10bps/时、小额 20U 手动验证，
+  // 自动执行保持关闭。载入后只填表单，确认无误再点「保存设置」才生效。
+  const FUNDING_STOCK_PRESET: Record<string, any> = {
+    funding_symbols: 'CRCL,COIN,CRWV,BE,TSLA,AMD,AAPL,AMZN,MSFT,INTC,MU,PLTR',
+    funding_enter_bps_hr: 10, // 只在费差 ≥ 10bps/时才高亮/可开
+    funding_exit_bps_hr: 2, // 费差收敛到 2 以内且已覆盖成本才平
+    funding_max_positions: 2, // 验证期最多同时 2 仓
+    funding_max_hold_hours: 48, // 周末持仓上限，避免拖到周一开盘 gap
+    funding_auto_execute: false, // 关键：保持手动，先验证再谈自动
+    order_notional_usd: 20, // 小额试水
+  }
+  const loadFundingPreset = () => {
+    setForm((f) => ({ ...f, ...FUNDING_STOCK_PRESET }))
+  }
+
   return (
     <div className="space-y-5 max-w-3xl">
       <p className="text-[13px] text-[#888]">
@@ -731,6 +747,19 @@ function Settings() {
           className="px-4 py-2 rounded-md bg-[#16a34a] text-white text-[13px] font-medium whitespace-nowrap hover:bg-[#15803d]"
         >
           载入稳健推荐
+        </button>
+      </div>
+      <div className="flex items-center justify-between gap-3 flex-wrap bg-[#eff6ff] border border-[#bfdbfe] rounded-lg px-4 py-3">
+        <div className="text-[13px] text-[#1e40af]">
+          <div className="font-medium">美股代币资金费预设（CRCL / COIN / TSLA… · 高费差窗口）</div>
+          <div className="text-[#3b5b9a] mt-0.5">周末/盘后代币化美股费差极大。一键填入：高费差美股白名单、开仓门槛 ≥10bps/时、单笔 20U、自动执行保持关闭。⚠️ 高息=高风险（周一开盘 gap、两所脱钩、薄盘口滑点），先小额手动验证一次结算真到账再谈放大。点击仅填表单，确认后再点「保存设置」才生效。</div>
+        </div>
+        <button
+          type="button"
+          onClick={loadFundingPreset}
+          className="px-4 py-2 rounded-md bg-[#2563eb] text-white text-[13px] font-medium whitespace-nowrap hover:bg-[#1d4ed8]"
+        >
+          载入美股代币预设
         </button>
       </div>
       {FIELD_GROUPS.map((g) => (
