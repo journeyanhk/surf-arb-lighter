@@ -146,4 +146,22 @@ function computeSpread(lighter, rblighter) {
   return { buyLighter, buyRblighter, best }
 }
 
-module.exports = { fetchJson, listOrderBooks, topOfBook, computeSpread }
+module.exports = { fetchJson, listOrderBooks, topOfBook, computeSpread, fundingRates }
+
+// Current funding rate per market for ONE venue. The /funding-rates endpoint on
+// each base URL returns an aggregated list spanning several exchanges (binance/
+// bybit/hyperliquid/lighter) keyed by the same symbol space, so we filter to the
+// venue's own rows (exchange == 'lighter') to get THIS venue's native rate.
+//   rate: decimal fraction PER 1-HOUR interval (0.0001 = 1bp). +rate => longs pay shorts.
+// Returns Map(symbolUpper -> { rate, market_id }).
+async function fundingRates(baseUrl, proxyUrl) {
+  const j = await fetchJson(`${baseUrl}/api/v1/funding-rates`, { proxyUrl })
+  const map = new Map()
+  for (const f of j.funding_rates || []) {
+    if (String(f.exchange || '').toLowerCase() !== 'lighter') continue
+    const rate = Number(f.rate)
+    if (!Number.isFinite(rate)) continue
+    map.set(String(f.symbol || '').toUpperCase(), { rate, market_id: f.market_id })
+  }
+  return map
+}

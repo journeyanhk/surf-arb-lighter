@@ -4,7 +4,7 @@ import { api } from './lib/api'
 
 const qc = new QueryClient()
 
-type Tab = 'dashboard' | 'settings'
+type Tab = 'dashboard' | 'funding' | 'settings'
 
 export default function App() {
   return (
@@ -26,12 +26,13 @@ function Shell() {
           </div>
           <nav className="flex gap-1 text-[13px]">
             <TabBtn active={tab === 'dashboard'} onClick={() => setTab('dashboard')}>监控面板</TabBtn>
+            <TabBtn active={tab === 'funding'} onClick={() => setTab('funding')}>资金费</TabBtn>
             <TabBtn active={tab === 'settings'} onClick={() => setTab('settings')}>设置</TabBtn>
           </nav>
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-6 py-6">
-        {tab === 'dashboard' ? <Dashboard /> : <Settings />}
+        {tab === 'dashboard' ? <Dashboard /> : tab === 'funding' ? <Funding /> : <Settings />}
       </main>
     </div>
   )
@@ -422,6 +423,86 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
     ],
   },
 ]
+
+/* ---------------- Funding (资金费差监控 · 只看不交易) ---------------- */
+
+function Funding() {
+  const { data, isLoading, isFetching, error } = useQuery({
+    queryKey: ['funding'],
+    queryFn: () => fetch(api('monitor/funding')).then((r) => r.json()),
+    refetchInterval: 30000,
+  })
+  if (isLoading) return <Loading label="正在读取两所资金费率…" />
+  if (error || data?.error) return <ErrorBox msg={data?.error || String(error)} />
+  const rows = (data?.rows || []) as any[]
+  const best = rows[0]
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-lg bg-[#eff6ff] border border-[#bfdbfe] px-4 py-3 text-[13px] text-[#1e40af]">
+        <div className="font-medium">资金费套利（carry）· 只看不交易</div>
+        <div className="text-[#3b5b9a] mt-1 leading-relaxed">
+          永续合约每 <b>1 小时</b>结算一次资金费（正值=多头付空头）。两所同币费率不同 →
+          <b>在费率高的一边做空（收费）、低的一边做多（少付/收费）</b>，仓位对冲不吃价格方向，靠费差一点点累积。
+          下表按“每小时费差”从大到小排序，先确认利差真实、够大，再考虑是否执行。
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <MiniStat label="可配对币种" value={data?.count ?? 0} />
+        <MiniStat label="最佳费差 / 时" value={best ? `${fmt(best.diff_bps_hr, 2)} bps` : '-'} tone="green" />
+        <MiniStat label="最佳日化" value={best ? `${fmt(best.daily_pct, 3)}%` : '-'} tone="green" />
+        <MiniStat label="最佳年化(简单)" value={best ? `${fmt(best.apr_pct, 1)}%` : '-'} tone="green" />
+      </div>
+
+      <Card
+        title="两所资金费差（按每小时费差排序）"
+        subtitle={`每 30 秒刷新 · 费率为每小时值 · ${data?.updated_at ? new Date(data.updated_at).toLocaleTimeString() : ''}${isFetching ? ' · 刷新中…' : ''}`}
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="text-left text-[#999] border-b border-[#eee]">
+                <Th>币种</Th>
+                <Th right>Lighter (bps/时)</Th>
+                <Th right>RBLighter (bps/时)</Th>
+                <Th right>费差 (bps/时)</Th>
+                <Th>套利方向（对冲）</Th>
+                <Th right>日化</Th>
+                <Th right>年化(简单)</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.symbol} className="border-b border-[#f3f3f3]">
+                  <Td className="font-medium">{r.symbol}</Td>
+                  <Td right mono className={r.lighter_bps_hr >= 0 ? 'text-[#555]' : 'text-red-500'}>{fmt(r.lighter_bps_hr, 2)}</Td>
+                  <Td right mono className={r.rblighter_bps_hr >= 0 ? 'text-[#555]' : 'text-red-500'}>{fmt(r.rblighter_bps_hr, 2)}</Td>
+                  <Td right mono className="text-emerald-600 font-medium">{fmt(r.diff_bps_hr, 2)}</Td>
+                  <Td>
+                    <span className="text-red-500">做空 {r.short_venue}</span>
+                    <span className="text-[#bbb]"> · </span>
+                    <span className="text-emerald-600">做多 {r.long_venue}</span>
+                  </Td>
+                  <Td right mono>{fmt(r.daily_pct, 3)}%</Td>
+                  <Td right mono>{fmt(r.apr_pct, 1)}%</Td>
+                </tr>
+              ))}
+              {!rows.length && (
+                <tr><td colSpan={7} className="py-6 text-center text-[#999]">暂无数据（可能两所暂未返回资金费）</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <div className="text-[12px] text-[#999] leading-relaxed">
+        风险提示：① 资金费每小时会变，费差可能收窄甚至反向，需持续监控；② 年化为简单外推（费差 × 24 × 365），
+        并非锁定收益；③ 建仓/平仓仍有跨价成本，费差需覆盖开平两次成本才净赚；④ 此页仅监控，不下任何单。
+      </div>
+    </div>
+  )
+}
 
 function Settings() {
   const client = useQueryClient()
