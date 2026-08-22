@@ -218,7 +218,7 @@ function TasksPanel() {
                     {t.pnl_usd == null ? '-' : Number(t.pnl_usd).toFixed(2)}
                   </Td>
                   <Td><Badge tone={meta.tone}>{meta.label}</Badge></Td>
-                  <Td className="text-[#888] max-w-[240px] truncate" >{t.note}</Td>
+                  <Td className="text-[#888] max-w-[420px] whitespace-normal break-words leading-snug align-top" title={t.note}>{t.note}</Td>
                   <Td right>
                     {active ? (
                       <div className="flex gap-1 justify-end">
@@ -624,7 +624,7 @@ function FundingPositions() {
                     {t.pnl_usd == null ? '-' : Number(t.pnl_usd).toFixed(3)}
                   </Td>
                   <Td><Badge tone={meta.tone}>{meta.label}</Badge></Td>
-                  <Td className="text-[#888] max-w-[300px] truncate" title={t.note}>{t.note}</Td>
+                  <Td className="text-[#888] max-w-[420px] whitespace-normal break-words leading-snug align-top" title={t.note}>{t.note}</Td>
                   <Td right>
                     {active ? (
                       <div className="flex gap-1 justify-end">
