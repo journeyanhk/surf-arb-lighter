@@ -19,6 +19,24 @@ async function main() {
 
   const server = createServer()
 
+  // ---- Auth gate (public-internet safety) ----
+  // API routes are registered INSIDE createServer(), so a plain app.use() here
+  // would run AFTER them and never guard them. Instead we add the middleware,
+  // then move its Layer to the front of the router stack (right after Express's
+  // own init layer) so it runs before every route. No-op unless APP_PASSWORD is
+  // set. Guards all /api/* except /api/auth/* and /api/health.
+  const { requireAuth, authEnabled } = require('./lib/auth')
+  server.app.use(requireAuth)
+  try {
+    const stack = server.app._router.stack
+    const layer = stack.pop() // the requireAuth layer we just appended
+    const initIdx = stack.findIndex((l) => l.name === 'expressInit')
+    stack.splice(initIdx >= 0 ? initIdx + 1 : 0, 0, layer)
+    console.log(`[auth] 登录鉴权 ${authEnabled() ? '已启用（APP_PASSWORD 已配置）' : '未启用（未设置 APP_PASSWORD）'}`)
+  } catch (e) {
+    console.error('[auth] 无法前置鉴权中间件：', e.message || e)
+  }
+
   // Single-service deploy: serve the built frontend from THIS same process, so
   // one Node/Bun process serves both /api/* and the SPA. Caddy then only needs
   // to reverse_proxy to this one port. API routes are already registered inside

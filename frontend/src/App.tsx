@@ -9,8 +9,80 @@ type Tab = 'dashboard' | 'funding' | 'settings'
 export default function App() {
   return (
     <QueryClientProvider client={qc}>
-      <Shell />
+      <AuthGate>
+        <Shell />
+      </AuthGate>
     </QueryClientProvider>
+  )
+}
+
+// Gate the whole app behind a login when the backend has APP_PASSWORD set.
+// When auth is disabled (local dev), this renders children immediately.
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['auth-status'],
+    queryFn: () => fetch(api('auth/status'), { credentials: 'include' }).then((r) => r.json()),
+    retry: false,
+  })
+  if (isLoading) return <div className="min-h-screen bg-[#fafafa]" />
+  if (data && data.enabled && !data.authed) return <Login onDone={() => refetch()} />
+  return <>{children}</>
+}
+
+function Login({ onDone }: { onDone: () => void }) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await fetch(api('auth/login'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (r.ok && j.ok) onDone()
+      else setErr(j.error || '登录失败')
+    } catch (_) {
+      setErr('网络错误，请重试')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="min-h-screen bg-[#fafafa] flex items-center justify-center px-6">
+      <form onSubmit={submit} className="w-full max-w-[340px] bg-white border border-[#e5e5e5] rounded-xl px-6 py-7 shadow-sm">
+        <h1 className="text-[16px] font-semibold tracking-tight">登录</h1>
+        <p className="text-[12px] text-[#888] mt-1 mb-5">RBLighter ↔ Lighter 套利控制台</p>
+        <label className="block text-[12px] text-[#666] mb-1">用户名</label>
+        <input
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          autoFocus
+          className="w-full mb-3 px-3 py-2 rounded-md border border-[#ddd] text-[14px] outline-none focus:border-[#2563eb]"
+        />
+        <label className="block text-[12px] text-[#666] mb-1">密码</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full mb-4 px-3 py-2 rounded-md border border-[#ddd] text-[14px] outline-none focus:border-[#2563eb]"
+        />
+        {err ? <div className="text-[12px] text-red-500 mb-3">{err}</div> : null}
+        <button
+          type="submit"
+          disabled={busy}
+          className="w-full py-2 rounded-md bg-[#2563eb] text-white text-[14px] font-medium disabled:opacity-50 hover:bg-[#1d4ed8]"
+        >
+          {busy ? '登录中…' : '登录'}
+        </button>
+      </form>
+    </div>
   )
 }
 
@@ -28,6 +100,7 @@ function Shell() {
             <TabBtn active={tab === 'dashboard'} onClick={() => setTab('dashboard')}>监控面板</TabBtn>
             <TabBtn active={tab === 'funding'} onClick={() => setTab('funding')}>资金费</TabBtn>
             <TabBtn active={tab === 'settings'} onClick={() => setTab('settings')}>设置</TabBtn>
+            <LogoutBtn />
           </nav>
         </div>
       </header>
@@ -35,6 +108,27 @@ function Shell() {
         {tab === 'dashboard' ? <Dashboard /> : tab === 'funding' ? <Funding /> : <Settings />}
       </main>
     </div>
+  )
+}
+
+function LogoutBtn() {
+  const { data } = useQuery({
+    queryKey: ['auth-status'],
+    queryFn: () => fetch(api('auth/status'), { credentials: 'include' }).then((r) => r.json()),
+    retry: false,
+  })
+  if (!data?.enabled) return null
+  const logout = async () => {
+    await fetch(api('auth/logout'), { method: 'POST', credentials: 'include' }).catch(() => {})
+    window.location.reload()
+  }
+  return (
+    <button
+      onClick={logout}
+      className="px-3 py-1.5 rounded-md border bg-white text-[#999] border-[#e5e5e5] hover:text-[#555] hover:border-[#bbb] transition-colors"
+    >
+      退出
+    </button>
   )
 }
 
