@@ -580,29 +580,110 @@ function Funding() {
   )
 }
 
-// Real accumulated funding income — sums the hourly settlements the engine
-// records into the ledger while holding delta-neutral funding positions. This
-// is actual per-hour carry (net_bps/1e4 × notional at each settlement), not the
-// midpoint estimate, so the user no longer needs to export venue CSVs to know
-// how much funding they've truly banked.
+// Real accumulated funding income. Prefers the exchange account's OWN funding
+// settlements (via the signing sidecar — same data as the venue CSV export, all
+// history), and falls back to the engine-recorded ledger when the sidecar isn't
+// configured. Either way: this is funding money only, never price/basis PnL.
 function FundingIncome() {
   const { data } = useQuery({
     queryKey: ['funding-income'],
     queryFn: () => fetch(api('funding-income')).then((r) => r.json()),
-    refetchInterval: 15000,
+    refetchInterval: 20000,
   })
+  const money = (n: number) => `${n >= 0 ? '+' : ''}${(Number(n) || 0).toFixed(4)} USD`
+  const tone = (n: number) => (n > 0 ? 'text-emerald-600' : n < 0 ? 'text-red-500' : 'text-[#888]')
+  const source = data?.source
+
+  // ---- Real per-account settlements (via sidecar) ----
+  if (source === 'account') {
+    const grand = Number(data?.grand_total_usd) || 0
+    const lTot = Number(data?.lighter_total_usd) || 0
+    const rTot = Number(data?.rblighter_total_usd) || 0
+    const settlements = Number(data?.settlements) || 0
+    const bySymbol = (data?.by_symbol || []) as any[]
+    const recent = (data?.recent || []) as any[]
+    return (
+      <Card
+        title="真实资金费累计（账户结算）"
+        subtitle={`直接读取两所账户的真实资金费结算记录（与你导出的 CSV 一致），覆盖最近 ${data?.days ?? 30} 天全部历史。每 20 秒刷新，无需再导 CSV。`}
+      >
+        {data?.venue_errors?.length ? (
+          <div className="mb-3 text-[12px] text-amber-600">{data.venue_errors.join(' · ')}</div>
+        ) : null}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <MiniStat label="资金费合计（两所净）" value={money(grand)} tone={grand >= 0 ? 'green' : 'red'} />
+          <MiniStat label="Lighter 侧" value={money(lTot)} tone={lTot >= 0 ? 'green' : 'red'} />
+          <MiniStat label="RBLighter 侧" value={money(rTot)} tone={rTot >= 0 ? 'green' : 'red'} />
+          <MiniStat label="结算笔数" value={settlements} />
+        </div>
+        {bySymbol.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left text-[#999] border-b border-[#eee]">
+                  <Th>币种</Th><Th right>Lighter(USD)</Th><Th right>RBLighter(USD)</Th>
+                  <Th right>合计(USD)</Th><Th right>结算笔数</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {bySymbol.map((s) => (
+                  <tr key={s.symbol} className="border-b border-[#f3f3f3]">
+                    <Td className="font-medium">{s.symbol}</Td>
+                    <Td right mono className={tone(Number(s.lighter) || 0)}>{money(Number(s.lighter) || 0)}</Td>
+                    <Td right mono className={tone(Number(s.rblighter) || 0)}>{money(Number(s.rblighter) || 0)}</Td>
+                    <Td right mono className={tone(Number(s.total) || 0)}>{money(Number(s.total) || 0)}</Td>
+                    <Td right mono>{s.count}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="py-4 text-[13px] text-[#999]">最近 {data?.days ?? 30} 天暂无资金费结算记录。</div>
+        )}
+        {recent.length ? (
+          <details className="mt-3">
+            <summary className="text-[12px] text-[#666] cursor-pointer select-none">展开最近 {recent.length} 笔结算明细</summary>
+            <div className="overflow-x-auto mt-2">
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="text-left text-[#999] border-b border-[#eee]">
+                    <Th>时间</Th><Th>交易所</Th><Th>币种</Th><Th>方向</Th><Th right>资金费(USD)</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recent.map((f, i) => (
+                    <tr key={i} className="border-b border-[#f6f6f6]">
+                      <Td className="text-[#888]">{f.timestamp ? new Date(f.timestamp * 1000).toLocaleString() : '-'}</Td>
+                      <Td>{f.venue}</Td>
+                      <Td className="font-medium">{f.symbol}</Td>
+                      <Td>{f.side === 'long' ? <span className="text-emerald-600">多</span> : f.side === 'short' ? <span className="text-red-500">空</span> : '-'}</Td>
+                      <Td right mono className={tone(Number(f.change) || 0)}>{money(Number(f.change) || 0)}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        ) : null}
+        <div className="mt-3 text-[12px] text-[#999] leading-relaxed">
+          说明：只统计<b>资金费</b>本身（账户真实结算，进账为正/倒付为负），<b>不含</b>开平仓的价差与滑点盈亏。要看含价差的整体盈亏，请看上方「资金费对冲持仓」的盈亏列。
+        </div>
+      </Card>
+    )
+  }
+
+  // ---- Fallback: engine ledger (forward-only, sidecar 未配置) ----
   const positions = (data?.positions || []) as any[]
   const grand = Number(data?.grand_total_usd) || 0
   const openTot = Number(data?.open_total_usd) || 0
   const closedTot = Number(data?.closed_total_usd) || 0
   const settlements = Number(data?.settlements) || 0
-  const money = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(4)} USD`
-  const tone = (n: number) => (n > 0 ? 'text-emerald-600' : n < 0 ? 'text-red-500' : 'text-[#888]')
 
   return (
     <Card
       title="真实资金费累计"
-      subtitle="引擎在每个整点结算时，按当时实时费差 × 名义金额逐笔累加的真实资金费收入（不含价差盈亏）。每 15 秒刷新，无需再导出交易所 CSV。"
+      subtitle="引擎在每个整点结算时，按当时实时费差 × 名义金额逐笔累加的资金费（不含价差盈亏）。配置签名边车后，将自动改为读取账户真实结算记录（含全部历史）。"
     >
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <MiniStat label="累计资金费（全部）" value={money(grand)} tone={grand >= 0 ? 'green' : 'red'} />
@@ -640,12 +721,11 @@ function FundingIncome() {
         </div>
       ) : (
         <div className="py-4 text-[13px] text-[#999] leading-relaxed">
-          暂无结算记录。资金费按<b>整点</b>结算，持仓需跨过至少一个整点才会记入第一笔。开一单并持有到下一个整点后，这里就会开始累加。
+          暂无结算记录。配置签名边车（sidecar）后，这里会直接显示账户真实资金费（含全部历史）；未配置时仅从本功能上线后、且持仓跨过整点才逐笔累加。
         </div>
       )}
       <div className="mt-3 text-[12px] text-[#999] leading-relaxed">
         说明：此处只统计<b>资金费</b>本身（真金白银进账/倒付），不含开平仓的价差与滑点盈亏。要看含价差的整体盈亏，请看上方「资金费对冲持仓」的盈亏列。
-        数字自本功能上线后开始累加，之前的历史持仓不会回补。
       </div>
     </Card>
   )

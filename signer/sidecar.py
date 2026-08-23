@@ -186,6 +186,53 @@ class Venue:
         except Exception as e:  # noqa
             return {"error": str(e), "account_index": self.account_index}
 
+    async def funding_history(self, start_ts=None, end_ts=None, max_rows=2000):
+        """账户真实资金费结算记录（/api/v1/positionFunding，需鉴权）。
+        用 SignerClient 生成短期 auth token，分页拉取并映射 market_id→symbol。
+        返回 [{timestamp, market_id, symbol, change, rate, position_side}]。"""
+        if not self.client:
+            raise RuntimeError("client 未就绪")
+        auth, err = self.client.create_auth_token_with_expiry()
+        if err is not None:
+            raise RuntimeError(f"create_auth_token: {err}")
+        acct = lighter.AccountApi(self.client.api_client)
+        rows = []
+        cursor = None
+        pages = 0
+        while pages < 30 and len(rows) < max_rows:
+            pages += 1
+            kwargs = dict(account_index=int(self.account_index), limit=100, authorization=auth)
+            if cursor:
+                kwargs["cursor"] = cursor
+            if start_ts:
+                kwargs["start_timestamp"] = int(start_ts)
+            if end_ts:
+                kwargs["end_timestamp"] = int(end_ts)
+            res = await acct.position_funding(**kwargs)
+            items = getattr(res, "position_fundings", None) or []
+            if not items:
+                break
+            stop = False
+            for it in items:
+                ts = int(getattr(it, "timestamp", 0) or 0)
+                if start_ts and ts < int(start_ts):
+                    stop = True
+                    break
+                mid = int(getattr(it, "market_id", -1))
+                meta = self.markets.get(mid) or {}
+                rows.append({
+                    "timestamp": ts,
+                    "market_id": mid,
+                    "symbol": meta.get("symbol"),
+                    "change": float(getattr(it, "change", 0) or 0),
+                    "rate": float(getattr(it, "rate", 0) or 0),
+                    "position_side": getattr(it, "position_side", None),
+                })
+            cursor = getattr(res, "next_cursor", None)
+            if stop or not cursor:
+                break
+        return rows
+
     async def close(self):
         try:
             if self.client and hasattr(self.client, "close"):
@@ -410,6 +457,28 @@ async def handle_positions(request):
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+async def handle_funding(request):
+    """账户真实资金费结算记录（positionFunding，需鉴权）。"""
+    vk = venue_key(request.query.get("venue"))
+    if not vk:
+        return web.json_response({"ok": False, "error": "unknown venue"}, status=400)
+    v = VENUES[vk]
+    if not v.configured:
+        return web.json_response({"ok": False, "error": "venue not configured"}, status=409)
+    if not v.ready:
+        return web.json_response({"ok": False, "error": f"venue not ready: {v.err}"}, status=409)
+    try:
+        start = request.query.get("start")
+        end = request.query.get("end")
+        rows = await v.funding_history(
+            start_ts=int(start) if start else None,
+            end_ts=int(end) if end else None,
+        )
+        return web.json_response({"ok": True, "fundings": rows})
+    except Exception as e:  # noqa
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def handle_cancel(request):
     """撤单：用于 maker 开仓的重新挂单（requote）。cancel_all_orders 是账户级撤单，
     本工具同一时刻每个交易对只有一个活动任务，故可安全使用。DRY_RUN 下空转。"""
@@ -486,6 +555,7 @@ def make_app():
     app.router.add_post("/order", handle_order)
     app.router.add_post("/cancel", handle_cancel)
     app.router.add_get("/positions", handle_positions)
+    app.router.add_get("/funding", handle_funding)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

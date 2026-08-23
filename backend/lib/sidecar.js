@@ -62,9 +62,19 @@ async function positions(venue) {
   return j.ok ? j.positions || {} : null
 }
 
+// 账户真实资金费结算记录（positionFunding，需鉴权，边车用 SignerClient 生成 token）。
+// 返回 [{timestamp, market_id, symbol, change, rate, position_side}]；未配置/失败返回 null。
+async function accountFunding(venue, { start, end } = {}) {
+  const qs = new URLSearchParams({ venue })
+  if (start) qs.set('start', String(start))
+  if (end) qs.set('end', String(end))
+  const j = await call(`/funding?${qs.toString()}`, { timeoutMs: 25000 })
+  return j.ok ? j.fundings || [] : null
+}
+
 // 撤销该 venue 上的挂单（账户级 cancel_all）。maker 开仓重新挂单前调用。
 async function cancelOrders(venue, market_index) {
   return call('/cancel', { method: 'POST', body: { venue, market_index }, timeoutMs: 10000 })
 }
 
-module.exports = { configured, health, placeOrder, positions, cancelOrders }
+module.exports = { configured, health, placeOrder, positions, cancelOrders, accountFunding }
