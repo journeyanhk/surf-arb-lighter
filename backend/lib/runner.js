@@ -6,6 +6,7 @@ const { dbQuery } = require('../db')
 const { loadSettings } = require('../routes/settings')
 const { listOrderBooks, topOfBook, computeSpread } = require('./exchange')
 const { stepEngine } = require('./engine')
+const { runMaintenance, isStackDepthError } = require('./maintenance')
 
 const SCAN_INTERVAL_MS = 8000
 const SCAN_LIMIT = 24 // fallback bounds if settings unavailable
@@ -188,6 +189,10 @@ async function scanTick(preloaded) {
       engine = await stepEngine(valid, s)
     } catch (e) {
       engine = { error: String(e.message || e) }
+      if (isStackDepthError(e)) {
+        console.warn('[runner] 引擎检测到 stack depth，立即执行数据库压缩自愈…')
+        runMaintenance(true).catch(() => {})
+      }
     }
 
     latest = {
@@ -216,6 +221,13 @@ async function scanTick(preloaded) {
   } catch (e) {
     health.last_status = 'error'
     health.last_error = String(e.message || e)
+    // Self-heal the PGlite bloat freeze: if any query hit "stack depth limit
+    // exceeded", compact the database immediately (VACUUM FULL) so the next tick
+    // runs clean — no manual restart needed.
+    if (isStackDepthError(e)) {
+      console.warn('[runner] 检测到 stack depth，立即执行数据库压缩自愈…')
+      runMaintenance(true).catch(() => {})
+    }
     throw e
   } finally {
     running = false
@@ -279,10 +291,19 @@ function start() {
   }
   timer = setTimeout(loop, 2000)
   console.log('[runner] background sampler started')
+
+  // Periodic DB maintenance: prune + VACUUM FULL to reclaim PGlite dead-tuple
+  // bloat (no autovacuum in-process). First pass 90s after boot, then every 5min.
+  // Runs independently of the scan loop so a slow scan never delays compaction.
+  const maintFirst = setTimeout(() => runMaintenance(true).catch(() => {}), 90_000)
+  const maintTimer = setInterval(() => runMaintenance().catch(() => {}), 5 * 60_000)
+
   return () => {
     stopped = true
     if (timer) clearTimeout(timer)
     timer = null
+    clearTimeout(maintFirst)
+    clearInterval(maintTimer)
   }
 }
 
