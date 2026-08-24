@@ -195,16 +195,47 @@ location /     { root /root/surf-arb-lighter/frontend/dist; try_files $uri /inde
 > **但根治办法是换成自建 PostgreSQL 服务**——它有 autovacuum、用的是操作系统 8MB 栈
 > （PGlite 是固定 2MB），从根上消除这个问题。
 
-**迁移只是改配置，不改代码**（`DATABASE_URL` 分支早已内置）：
+**迁移只是改配置，不改代码**（`DATABASE_URL` 分支早已内置）。
+
+#### 照着敲：从 PGlite 迁到自建 PostgreSQL（整套命令）
+
+> 把 `yourpassword` 换成你自己的密码（别用特殊字符 `@ : / #`，省得 URL 转义麻烦）。
+> 假设后端目录是 `/opt/arb/backend`、systemd 服务名是 `arb-backend`——按你的实际路径改。
 
 ```bash
+# 1) 安装并启动 PostgreSQL
 sudo apt update && sudo apt install -y postgresql
+sudo systemctl enable --now postgresql
+
+# 2) 建用户 + 建库
 sudo -u postgres psql -c "CREATE USER arb WITH PASSWORD 'yourpassword';"
 sudo -u postgres psql -c "CREATE DATABASE arb OWNER arb;"
+
+# 3) 自测能否用密码从 TCP 连上（能打印出空表清单就算通）
+psql "postgres://arb:yourpassword@127.0.0.1:5432/arb" -c '\dt'
+#    若报 password authentication failed，见本节末尾的排错块
+
+# 4) 写进后端环境变量（进入你的后端目录）
+cd /opt/arb/backend
+#    注释掉旧的嵌入式路径，避免混淆（DATABASE_URL 本就优先，但注掉更清楚）
+sed -i 's#^LOCAL_DB_PATH=#\#LOCAL_DB_PATH=#' .env
+#    追加/设置 DATABASE_URL
+echo 'DATABASE_URL=postgres://arb:yourpassword@127.0.0.1:5432/arb' >> .env
+#    确认一下写对了
+grep -E 'DATABASE_URL|LOCAL_DB_PATH' .env
+
+# 5) 重启后端（建表会在启动时自动幂等完成）
+sudo systemctl restart arb-backend
+
+# 6) 验证：日志应打印 “[db] using LOCAL Postgres server (DATABASE_URL)”
+sudo journalctl -u arb-backend -n 30 --no-pager | grep -i postgres
+
+# 7) 验证：四张表已自动创建
+psql "postgres://arb:yourpassword@127.0.0.1:5432/arb" -c '\dt'
+#    应看到 arb_settings / arb_spread_samples / arb_signals / arb_tasks
 ```
-然后在 `backend/.env` 设 `DATABASE_URL=postgres://arb:yourpassword@127.0.0.1:5432/arb`
-（它优先于 `LOCAL_DB_PATH`），重启后端即可。启动日志会打印
-`[db] using LOCAL Postgres server (DATABASE_URL)`，建表由后端**自动幂等完成**，无需手动 SQL。
+
+到第 6 步看到 `using LOCAL Postgres server` 就迁移成功了，`stack depth` 从此不再出现。
 
 > **数据会不会丢？** 切换后是一套全新的空库，旧的本地任务/采样历史不会自动搬过去，
 > 但**这对你几乎无影响**：设置项重填一次即可；「真实资金费累计」「真实盈亏总览」都是直接
