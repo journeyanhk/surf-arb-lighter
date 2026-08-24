@@ -14,6 +14,11 @@
 const HAS_PG_SERVER = !!process.env.DATABASE_URL
 const EMBED_PATH = process.env.LOCAL_DB_PATH || ''
 const USE_LOCAL = HAS_PG_SERVER || !!EMBED_PATH
+// Which engine backs us — lets maintenance pick the right upkeep:
+//   'pglite'    → no autovacuum worker; needs periodic VACUUM FULL to reclaim bloat.
+//   'pg-server' → real Postgres, autovacuum handles reclaim; only prune stale rows.
+//   'managed'   → Surf managed Postgres; autovacuum too, VACUUM not permitted.
+const DB_BACKEND = HAS_PG_SERVER ? 'pg-server' : EMBED_PATH ? 'pglite' : 'managed'
 
 let _impl = null
 
@@ -50,4 +55,4 @@ async function dbQuery(sql, params, options) {
   return impl().dbQuery(sql, params, options)
 }
 
-module.exports = { dbQuery, USE_LOCAL }
+module.exports = { dbQuery, USE_LOCAL, DB_BACKEND }

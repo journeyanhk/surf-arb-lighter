@@ -15,7 +15,7 @@
 // on demand the instant a stack-depth error is observed, so the app self-heals
 // without any manual restart.
 
-const { dbQuery, USE_LOCAL } = require('../db')
+const { dbQuery, DB_BACKEND } = require('../db')
 
 let running = false
 let lastRun = 0
@@ -37,12 +37,14 @@ async function prune() {
   }
 }
 
-// Reclaim dead-tuple bloat. VACUUM FULL must NOT run inside a transaction block
-// (our dbQuery issues single statements, so it's fine). Managed Surf Postgres
-// autovacuums on its own and may reject VACUUM over the query proxy — so only
-// compact when we own the database (PGlite or a self-hosted PG server).
+// Reclaim dead-tuple bloat. Only PGlite needs this: it runs Postgres in-process
+// (WASM) with NO autovacuum background worker, so dead tuples pile up forever and
+// only VACUUM FULL rewrites the heap to free them (verified: 30MB → 0.5MB). A real
+// Postgres server (pg-server) and Surf's managed DB both autovacuum on their own,
+// so we skip the exclusive-lock rewrite there. VACUUM FULL must NOT run inside a
+// transaction block — our dbQuery issues single statements, so it's fine.
 async function compact() {
-  if (!USE_LOCAL) return
+  if (DB_BACKEND !== 'pglite') return
   for (const tbl of ['arb_spread_samples', 'arb_signals', 'arb_tasks', 'arb_funding_ledger']) {
     try {
       await dbQuery(`VACUUM (FULL) ${tbl}`)

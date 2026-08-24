@@ -170,18 +170,55 @@ class Venue:
                 return await r.json()
 
     async def account_snapshot(self):
-        """账户资金/状态快照——用于排查“提交成功却没成交/没持仓”：多半是没保证金或 account_index 指错。"""
+        """账户资金/状态快照——用于排查“提交成功却没成交/没持仓”：多半是没保证金或 account_index 指错。
+        同时汇总当前持仓的未实现/已实现盈亏（交易盈亏，不含资金费），供面板显示真实盈亏。"""
+        def _f(x):
+            try:
+                return float(x)
+            except Exception:  # noqa
+                return 0.0
         try:
             j = await self._account_json()
             acc = (j.get("accounts") or [{}])[0]
-            npos = len(acc.get("positions") or [])
+            positions = acc.get("positions") or []
+            upnl = 0.0
+            rpnl = 0.0
+            open_n = 0
+            pos_out = []
+            for p in positions:
+                size = _f(p.get("position", p.get("size", 0)))
+                u = _f(p.get("unrealized_pnl"))
+                r = _f(p.get("realized_pnl"))
+                upnl += u
+                rpnl += r
+                if abs(size) > 0:  # 只计入真正有敞口的仓位
+                    open_n += 1
+                    sign = p.get("sign", 1)
+                    try:
+                        sign = int(sign)
+                    except Exception:  # noqa
+                        sign = 1
+                    pos_out.append({
+                        "symbol": p.get("symbol"),
+                        "market_id": p.get("market_id"),
+                        "side": "long" if sign >= 0 else "short",
+                        "size": size,
+                        "value": _f(p.get("position_value")),
+                        "avg_entry_price": _f(p.get("avg_entry_price")),
+                        "unrealized_pnl": u,
+                        "realized_pnl": r,
+                    })
             return {
                 "account_index": acc.get("account_index", self.account_index),
                 "status": acc.get("status"),
-                "collateral": acc.get("collateral"),
-                "available_balance": acc.get("available_balance"),
-                "total_asset_value": acc.get("total_asset_value"),
-                "open_positions": npos,
+                "collateral": _f(acc.get("collateral")),
+                "available_balance": _f(acc.get("available_balance")),
+                "total_asset_value": _f(acc.get("total_asset_value")),
+                "unrealized_pnl": upnl,
+                "realized_pnl": rpnl,
+                "trading_pnl": upnl + rpnl,   # 交易盈亏合计（当前持仓口径，不含资金费）
+                "open_positions": open_n,
+                "positions": pos_out,
             }
         except Exception as e:  # noqa
             return {"error": str(e), "account_index": self.account_index}

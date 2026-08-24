@@ -605,6 +605,8 @@ function Funding() {
         <MiniStat label="最佳年化(简单)" value={best ? `${fmt(best.apr_pct, 1)}%` : '-'} tone="green" />
       </div>
 
+      <AccountOverview />
+
       <FundingPositions />
 
       <FundingIncome />
@@ -671,6 +673,106 @@ function Funding() {
         故开仓阈值应明显高于平仓阈值；④ 模拟模式下「开仓」只写模拟仓位，不动真钱；实盘模式请先小额单币验证。
       </div>
     </div>
+  )
+}
+
+// Real account overview: both venues' balances + current trading P&L (unrealized
+// + realized from open positions), combined with funding into a true P&L picture.
+// Only shows when the signing sidecar is configured (needs authed account read).
+function AccountOverview() {
+  const acct = useQuery({
+    queryKey: ['accounts'],
+    queryFn: () => fetch(api('accounts')).then((r) => r.json()),
+    refetchInterval: 15000,
+  })
+  const income = useQuery({
+    queryKey: ['funding-income'],
+    queryFn: () => fetch(api('funding-income')).then((r) => r.json()),
+    refetchInterval: 20000,
+  })
+  const d = acct.data
+  if (!d || d.configured === false) return null // 未配置边车则隐藏（资金费面板已给出提示）
+
+  const money = (n: number) => `${n >= 0 ? '+' : ''}${(Number(n) || 0).toFixed(4)} USD`
+  const bal = (n: number) => `${(Number(n) || 0).toFixed(2)} USD`
+  const tone = (n: number) => (n > 0 ? 'text-emerald-600' : n < 0 ? 'text-red-500' : 'text-[#888]')
+
+  if (d.ok === false) {
+    return (
+      <Card title="真实盈亏总览（账户实时）" subtitle="读取两所账户余额与持仓盈亏">
+        <div className="py-3 text-[13px] text-amber-600">账户读取失败：{d.error || '边车未就绪'}</div>
+      </Card>
+    )
+  }
+
+  const inc = income.data
+  const fundingBy =
+    inc?.source === 'account'
+      ? { lighter: Number(inc.lighter_total_usd) || 0, rblighter: Number(inc.rblighter_total_usd) || 0 }
+      : null
+  const fundingTotal = fundingBy ? fundingBy.lighter + fundingBy.rblighter : null
+  const equity = Number(d.total_equity_usd) || 0
+  const tradePnl = Number(d.total_trading_pnl_usd) || 0
+  const combined = fundingTotal == null ? null : tradePnl + fundingTotal
+
+  const venues = [
+    { key: 'lighter' as const, name: 'Lighter', v: d.lighter },
+    { key: 'rblighter' as const, name: 'RBLighter', v: d.rblighter },
+  ]
+
+  return (
+    <Card
+      title="真实盈亏总览（账户实时）"
+      subtitle={`两所账户余额 + 当前持仓交易盈亏（未实现+已实现）+ 资金费累计 = 真实综合盈亏。每 15 秒刷新。${d.dry_run ? ' · 边车 DRY_RUN' : ''}`}
+    >
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <MiniStat label="账户总权益（两所）" value={bal(equity)} />
+        <MiniStat label="交易盈亏（未实现+已实现）" value={money(tradePnl)} tone={tradePnl >= 0 ? 'green' : 'red'} />
+        <MiniStat label="资金费累计" value={fundingTotal == null ? '—' : money(fundingTotal)} tone={fundingTotal == null ? undefined : fundingTotal >= 0 ? 'green' : 'red'} />
+        <MiniStat label="综合盈亏（交易+资金费）" value={combined == null ? '—' : money(combined)} tone={combined == null ? undefined : combined >= 0 ? 'green' : 'red'} />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left text-[#999] border-b border-[#eee]">
+              <Th>交易所</Th><Th right>总权益</Th><Th right>可用余额</Th><Th right>保证金</Th>
+              <Th right>未实现盈亏</Th><Th right>已实现盈亏</Th><Th right>资金费累计</Th><Th right>综合盈亏</Th><Th right>持仓数</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {venues.map(({ key, name, v }) => {
+              if (!v || v.ok === false) {
+                return (
+                  <tr key={key} className="border-b border-[#f3f3f3]">
+                    <Td className="font-medium">{name}</Td>
+                    <td colSpan={8} className="py-2 text-amber-600 text-[13px]">{v?.error || '未就绪'}</td>
+                  </tr>
+                )
+              }
+              const fund = fundingBy ? fundingBy[key] : null
+              const comb = fund == null ? Number(v.trading_pnl) || 0 : (Number(v.trading_pnl) || 0) + fund
+              return (
+                <tr key={key} className="border-b border-[#f3f3f3]">
+                  <Td className="font-medium">{name}</Td>
+                  <Td right mono>{bal(v.total_asset_value)}</Td>
+                  <Td right mono>{bal(v.available_balance)}</Td>
+                  <Td right mono>{bal(v.collateral)}</Td>
+                  <Td right mono className={tone(Number(v.unrealized_pnl) || 0)}>{money(Number(v.unrealized_pnl) || 0)}</Td>
+                  <Td right mono className={tone(Number(v.realized_pnl) || 0)}>{money(Number(v.realized_pnl) || 0)}</Td>
+                  <Td right mono className={fund == null ? 'text-[#bbb]' : tone(fund)}>{fund == null ? '—' : money(fund)}</Td>
+                  <Td right mono className={tone(comb)}>{money(comb)}</Td>
+                  <Td right mono>{v.open_positions}</Td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3 text-[12px] text-[#999] leading-relaxed">
+        说明：①「交易盈亏」为当前持仓的未实现+已实现盈亏（价格/基差口径，来自交易所账户，实时）；已完全平掉的历史仓位其价差盈亏交易所不再单列，故此列偏重反映当前在场仓位；
+        ②「资金费累计」来自账户真实结算（最近 {inc?.days ?? 30} 天）；③「综合盈亏」=「交易盈亏」+「资金费累计」，是当前最接近真实的盈亏画像；④「总权益」为账户当前净值，受入金/出金影响。
+      </div>
+    </Card>
   )
 }
 
@@ -826,8 +928,11 @@ function FundingIncome() {
 }
 
 // Active funding-carry positions (reuses /tasks, filtered to strategy='funding').
+// Active positions always shown in full; finished ones (CLOSED/ERROR) are paged so
+// the panel stays short as history accumulates.
 function FundingPositions() {
   const client = useQueryClient()
+  const [page, setPage] = useState(0)
   const { data } = useQuery({
     queryKey: ['tasks'],
     queryFn: () => fetch(api('tasks')).then((r) => r.json()),
@@ -845,56 +950,92 @@ function FundingPositions() {
   const all = (data?.tasks || []) as any[]
   const tasks = all.filter((t) => t.strategy === 'funding')
   if (!tasks.length) return null
-  const hasHistory = tasks.some((t) => t.state === 'CLOSED' || t.state === 'ERROR')
+  const active = tasks.filter((t) => ACTIVE.includes(t.state))
+  const history = tasks.filter((t) => !ACTIVE.includes(t.state))
+  const perPage = 8
+  const pageCount = Math.max(1, Math.ceil(history.length / perPage))
+  const cur = Math.min(page, pageCount - 1)
+  const shown = history.slice(cur * perPage, cur * perPage + perPage)
+
+  const row = (t: any) => {
+    const meta = STATE_META[t.state] || { label: t.state, tone: 'light' as const }
+    const isActive = ACTIVE.includes(t.state)
+    return (
+      <tr key={t.id} className="border-b border-[#f3f3f3]">
+        <Td className="font-medium">{t.symbol}{t.exec_mode === 'live' ? <span className="ml-1 text-[10px] text-red-500">实盘</span> : <span className="ml-1 text-[10px] text-[#bbb]">模拟</span>}</Td>
+        <Td><span className="text-emerald-600">多 {t.buy_venue}</span><span className="text-[#bbb]"> · </span><span className="text-red-500">空 {t.sell_venue}</span></Td>
+        <Td right mono>{t.matched_size ? Number(t.matched_size).toFixed(4) : '-'}</Td>
+        <Td right mono className="text-emerald-600">{t.entry_funding_bps_hr == null ? '-' : fmt(t.entry_funding_bps_hr, 2)}</Td>
+        <Td right mono className={t.pnl_usd == null ? '' : t.pnl_usd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
+          {t.pnl_usd == null ? '-' : Number(t.pnl_usd).toFixed(3)}
+        </Td>
+        <Td><Badge tone={meta.tone}>{meta.label}</Badge></Td>
+        <Td className="text-[#888] max-w-[420px] whitespace-normal break-words leading-snug align-top" title={t.note}>{t.note}</Td>
+        <Td right>
+          {isActive ? (
+            <div className="flex gap-1 justify-end">
+              {(t.state === 'HOLDING' || t.state === 'PAUSED') && (
+                <MiniBtn onClick={() => act.mutate({ id: t.id, op: 'close' })}>平仓</MiniBtn>
+              )}
+              {t.state === 'PAUSED' && (
+                <MiniBtn onClick={() => act.mutate({ id: t.id, op: 'resume' })}>恢复</MiniBtn>
+              )}
+            </div>
+          ) : (
+            <span className="text-[#ccc]">—</span>
+          )}
+        </Td>
+      </tr>
+    )
+  }
+
+  const header = (
+    <tr className="text-left text-[#999] border-b border-[#eee]">
+      <Th>币种</Th><Th>方向</Th><Th right>撮合量</Th><Th right>入场费差(bps/时)</Th>
+      <Th right>盈亏(USD)</Th><Th>状态</Th><Th>说明</Th><Th right>操作</Th>
+    </tr>
+  )
 
   return (
-    <Card title="资金费对冲持仓" subtitle="做多低费一边 + 做空高费一边，持仓吃费；费差收敛或到最长持仓即自动平仓。可手动平仓。">
-      <div className="overflow-x-auto">
-        <table className="w-full text-[13px]">
-          <thead>
-            <tr className="text-left text-[#999] border-b border-[#eee]">
-              <Th>币种</Th><Th>方向</Th><Th right>撮合量</Th><Th right>入场费差(bps/时)</Th>
-              <Th right>盈亏(USD)</Th><Th>状态</Th><Th>说明</Th><Th right>操作</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {tasks.map((t) => {
-              const meta = STATE_META[t.state] || { label: t.state, tone: 'light' as const }
-              const active = ACTIVE.includes(t.state)
-              return (
-                <tr key={t.id} className="border-b border-[#f3f3f3]">
-                  <Td className="font-medium">{t.symbol}{t.exec_mode === 'live' ? <span className="ml-1 text-[10px] text-red-500">实盘</span> : <span className="ml-1 text-[10px] text-[#bbb]">模拟</span>}</Td>
-                  <Td><span className="text-emerald-600">多 {t.buy_venue}</span><span className="text-[#bbb]"> · </span><span className="text-red-500">空 {t.sell_venue}</span></Td>
-                  <Td right mono>{t.matched_size ? Number(t.matched_size).toFixed(4) : '-'}</Td>
-                  <Td right mono className="text-emerald-600">{t.entry_funding_bps_hr == null ? '-' : fmt(t.entry_funding_bps_hr, 2)}</Td>
-                  <Td right mono className={t.pnl_usd == null ? '' : t.pnl_usd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
-                    {t.pnl_usd == null ? '-' : Number(t.pnl_usd).toFixed(3)}
-                  </Td>
-                  <Td><Badge tone={meta.tone}>{meta.label}</Badge></Td>
-                  <Td className="text-[#888] max-w-[420px] whitespace-normal break-words leading-snug align-top" title={t.note}>{t.note}</Td>
-                  <Td right>
-                    {active ? (
-                      <div className="flex gap-1 justify-end">
-                        {(t.state === 'HOLDING' || t.state === 'PAUSED') && (
-                          <MiniBtn onClick={() => act.mutate({ id: t.id, op: 'close' })}>平仓</MiniBtn>
-                        )}
-                        {t.state === 'PAUSED' && (
-                          <MiniBtn onClick={() => act.mutate({ id: t.id, op: 'resume' })}>恢复</MiniBtn>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-[#ccc]">—</span>
-                    )}
-                  </Td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-      {hasHistory && (
-        <div className="mt-3 text-right">
-          <MiniBtn onClick={() => clearHistory.mutate()}>清空历史记录</MiniBtn>
+    <Card title="资金费对冲持仓" subtitle="做多低费一边 + 做空高费一边，持仓吃费；费差收敛或到最长持仓即自动平仓。可手动平仓。持仓中优先显示，历史记录翻页查看。">
+      {active.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px]">
+            <thead>{header}</thead>
+            <tbody>{active.map(row)}</tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="py-3 text-[13px] text-[#999]">当前无持仓中的对冲仓位。</div>
+      )}
+
+      {history.length > 0 && (
+        <div className="mt-5">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[12px] text-[#999]">历史记录（已平仓 / 作废）· 共 {history.length} 条</div>
+            <MiniBtn onClick={() => clearHistory.mutate()}>清空历史记录</MiniBtn>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead>{header}</thead>
+              <tbody>{shown.map(row)}</tbody>
+            </table>
+          </div>
+          {pageCount > 1 && (
+            <div className="flex items-center justify-end gap-2 mt-3 text-[12px]">
+              <button
+                onClick={() => setPage(Math.max(0, cur - 1))}
+                disabled={cur === 0}
+                className="px-2.5 py-1 rounded border border-[#ddd] bg-white hover:border-[#999] disabled:opacity-40"
+              >上一页</button>
+              <span className="text-[#999]">第 {cur + 1} / {pageCount} 页</span>
+              <button
+                onClick={() => setPage(Math.min(pageCount - 1, cur + 1))}
+                disabled={cur >= pageCount - 1}
+                className="px-2.5 py-1 rounded border border-[#ddd] bg-white hover:border-[#999] disabled:opacity-40"
+              >下一页</button>
+            </div>
+          )}
         </div>
       )}
     </Card>

@@ -186,9 +186,16 @@ location /     { root /root/surf-arb-lighter/frontend/dist; try_files $uri /inde
 
 ---
 
-## 附录：改用自建 Postgres 服务（方式 B，可选）
+## 附录：改用自建 Postgres 服务（方式 B，可选，长期 7×24 运行强烈推荐）
 
-如果你更想用独立的 Postgres 服务而不是嵌入式：
+> **为什么推荐？**「跑一段时间报 `stack depth limit exceeded`、重启才好」是嵌入式
+> PGlite 的固有局限：它是进程内 WASM Postgres，**没有 autovacuum 后台回收进程**，而本
+> 工具每 8 秒高频增删采样表，死元组只增不减，数小时后把 WASM 实例撑爆，所有查询报错，
+> 只能靠重启换新实例。代码已内置定时 `VACUUM FULL` 自动压缩 + 检测到该错误立即自愈来缓解，
+> **但根治办法是换成自建 PostgreSQL 服务**——它有 autovacuum、用的是操作系统 8MB 栈
+> （PGlite 是固定 2MB），从根上消除这个问题。
+
+**迁移只是改配置，不改代码**（`DATABASE_URL` 分支早已内置）：
 
 ```bash
 sudo apt update && sudo apt install -y postgresql
@@ -196,7 +203,14 @@ sudo -u postgres psql -c "CREATE USER arb WITH PASSWORD 'yourpassword';"
 sudo -u postgres psql -c "CREATE DATABASE arb OWNER arb;"
 ```
 然后在 `backend/.env` 设 `DATABASE_URL=postgres://arb:yourpassword@127.0.0.1:5432/arb`
-（它优先于 `LOCAL_DB_PATH`）。
+（它优先于 `LOCAL_DB_PATH`），重启后端即可。启动日志会打印
+`[db] using LOCAL Postgres server (DATABASE_URL)`，建表由后端**自动幂等完成**，无需手动 SQL。
+
+> **数据会不会丢？** 切换后是一套全新的空库，旧的本地任务/采样历史不会自动搬过去，
+> 但**这对你几乎无影响**：设置项重填一次即可；「真实资金费累计」「真实盈亏总览」都是直接
+> 读取交易所账户的真实数据（不依赖本地库），历史照样在。想保留旧任务记录再迁移也行，
+> 但一般没必要。
+
 
 **「password authentication failed」怎么办**：多半是 `pg_hba.conf` 用了 `peer`/`ident`
 认证。改用密码认证：
