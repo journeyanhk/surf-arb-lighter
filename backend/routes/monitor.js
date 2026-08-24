@@ -103,6 +103,7 @@ router.get('/funding', async (_req, res) => {
       exit_bps_hr: exit,
       funding_auto_execute: !!s.funding_auto_execute,
       venue_errors: map.errors,
+      venue_warnings: map.warnings || [],
       updated_at: new Date().toISOString(),
     }
     fundingCache = { at: Date.now(), data: payload }

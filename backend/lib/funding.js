@@ -12,27 +12,56 @@
 const { fundingRates } = require('./exchange')
 
 let cache = { at: 0, data: null }
+// Per-venue last-good snapshot. RBLighter (rh.lighter.xyz) rate-limits the
+// /funding-rates endpoint hard; when a call 429s we reuse that venue's previous
+// good map instead of blanking the whole pair list. Funding settles hourly, so
+// a few-minutes-stale rate is still perfectly usable.
+const lastGood = { lighter: null, rblighter: null } // { at, map }
+const STALE_CAP_MS = 20 * 60_000 // don't trust a cached rate older than 20 min
 
-// Returns { at, bySymbol: Map(SYMBOL -> { lighter, rblighter }), errors: [] }.
-// Cached ~25s: funding changes slowly, no need to hammer the venues each tick.
-async function getFundingMap(s, { maxAgeMs = 25000 } = {}) {
+function ageStr(ms) {
+  const m = Math.round(ms / 60000)
+  return m <= 1 ? '约 1 分钟' : `约 ${m} 分钟`
+}
+
+// Resolve one venue's rate map from a settled promise, falling back to its
+// last-good snapshot on failure. Pushes a soft "warnings" note (stale, still
+// usable) or a hard "errors" note (no fallback available) as appropriate.
+function resolveVenue(name, settled, warnings, errors) {
+  if (settled.status === 'fulfilled') {
+    lastGood[name] = { at: Date.now(), map: settled.value }
+    return settled.value
+  }
+  const err = String(settled.reason?.message || settled.reason)
+  const lg = lastGood[name]
+  if (lg && Date.now() - lg.at < STALE_CAP_MS) {
+    warnings.push(`${name === 'lighter' ? 'Lighter' : 'RBLighter'} 限流(${err})，暂用${ageStr(Date.now() - lg.at)}前的费率`)
+    return lg.map
+  }
+  errors.push(`${name === 'lighter' ? 'Lighter' : 'RBLighter'}: ${err}`)
+  return new Map()
+}
+
+// Returns { at, bySymbol: Map(SYMBOL -> { lighter, rblighter }), errors, warnings }.
+// Cached 60s: funding settles hourly, so there's no value in hammering the
+// venues each tick — a longer cache is the first line of defense against 429.
+async function getFundingMap(s, { maxAgeMs = 60000 } = {}) {
   if (cache.data && Date.now() - cache.at < maxAgeMs) return cache.data
   const [lr, rr] = await Promise.allSettled([
     fundingRates(s.lighter_base_url, s.proxy_url),
     fundingRates(s.rblighter_base_url, s.proxy_url),
   ])
   const errors = []
-  if (lr.status === 'rejected') errors.push(`Lighter: ${String(lr.reason?.message || lr.reason)}`)
-  if (rr.status === 'rejected') errors.push(`RBLighter: ${String(rr.reason?.message || rr.reason)}`)
-  const lf = lr.status === 'fulfilled' ? lr.value : new Map()
-  const rf = rr.status === 'fulfilled' ? rr.value : new Map()
+  const warnings = []
+  const lf = resolveVenue('lighter', lr, warnings, errors)
+  const rf = resolveVenue('rblighter', rr, warnings, errors)
   const bySymbol = new Map()
   for (const [sym, l] of lf) {
     const r = rf.get(sym)
     if (!r) continue // only symbols on BOTH venues form a tradeable pair
     bySymbol.set(sym, { lighter: l.rate, rblighter: r.rate })
   }
-  const data = { at: Date.now(), bySymbol, errors }
+  const data = { at: Date.now(), bySymbol, errors, warnings }
   // Only overwrite the cache when at least one venue answered — otherwise keep
   // the previous good snapshot so a transient blip doesn't blank the engine.
   if (bySymbol.size || !cache.data) cache = { at: Date.now(), data }

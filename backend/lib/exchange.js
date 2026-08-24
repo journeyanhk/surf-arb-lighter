@@ -157,15 +157,19 @@ module.exports = { fetchJson, listOrderBooks, topOfBook, computeSpread, fundingR
 async function fundingRates(baseUrl, proxyUrl) {
   const url = `${baseUrl}/api/v1/funding-rates`
   let j
+  // This endpoint is the most rate-limited one (esp. RBLighter/rh.lighter.xyz),
+  // and it's a single low-frequency call, so we can afford to retry harder and
+  // wait longer before giving up — cheaper than blanking the funding panel.
+  const opts = { proxyUrl, retries: 6, timeoutMs: 12000 }
   try {
-    j = await fetchJson(url, { proxyUrl })
+    j = await fetchJson(url, opts)
   } catch (e) {
     // Funding data is PUBLIC read-only — the proxy is only needed for geo/auth
     // on trading calls. Some proxies path-filter and reject un-whitelisted
     // paths with 405/403/404. If we were going through a proxy, retry the
     // request DIRECTLY before giving up.
     if (proxyUrl) {
-      j = await fetchJson(url, {})
+      j = await fetchJson(url, { retries: 6, timeoutMs: 12000 })
     } else {
       throw e
     }

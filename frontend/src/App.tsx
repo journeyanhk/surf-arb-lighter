@@ -598,6 +598,7 @@ function Funding() {
         <HealthItem label="平仓阈值" value={`≤ ${fmt(exit, 2)} bps/时`} />
         <HealthItem label="自动执行" value={data?.funding_auto_execute ? '开启' : '关闭（手动）'} warn={!data?.funding_auto_execute ? false : false} />
         {data?.venue_errors?.length ? <span className="text-amber-600 truncate max-w-[320px]" title={data.venue_errors.join(' | ')}>部分源异常：{data.venue_errors.join(' | ')}</span> : null}
+        {data?.venue_warnings?.length ? <span className="text-[#c98a00] truncate max-w-[320px]" title={data.venue_warnings.join(' | ')}>限流·暂用缓存：{data.venue_warnings.join(' | ')}</span> : null}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
