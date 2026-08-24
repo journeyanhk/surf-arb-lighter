@@ -138,6 +138,19 @@ const STATEMENTS = [
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_symbols text NOT NULL DEFAULT ''`,
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_max_positions integer NOT NULL DEFAULT 1`,
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_max_hold_hours double precision NOT NULL DEFAULT 72`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_exit_confirm_hours double precision NOT NULL DEFAULT 2`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_min_hold_hours double precision NOT NULL DEFAULT 2`,
+  `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS soft_exit_since timestamp`,
+
+  `CREATE TABLE IF NOT EXISTS arb_equity_snapshots (
+     id serial PRIMARY KEY,
+     at timestamp DEFAULT now(),
+     lighter_equity double precision,
+     rblighter_equity double precision,
+     total_equity double precision NOT NULL,
+     lighter_available double precision,
+     rblighter_available double precision
+   )`,
 
 
   // Ensure the single settings row exists.

@@ -37,7 +37,7 @@ const DEFAULTS = {
   ioc_orders: true,
   maker_close: false,
   maker_close_wait_ticks: 20,
-  maker_open: false,
+  maker_open: true,
   maker_open_wait_ticks: 20,
   exit_spread_bps: 1,
   max_hold_ticks: 20,
@@ -48,6 +48,8 @@ const DEFAULTS = {
   funding_symbols: '',
   funding_max_positions: 1,
   funding_max_hold_hours: 72,
+  funding_exit_confirm_hours: 2,
+  funding_min_hold_hours: 2,
   focus_symbol: '',
   scan_symbols: '',
   max_concurrent_tasks: 1,
@@ -72,6 +74,8 @@ const NUMERIC_MIN = {
   funding_exit_bps_hr: 0, // 每小时费差 ≤ 此值即平仓（bps）
   funding_max_positions: 1, // 至少允许 1 个资金费仓位
   funding_max_hold_hours: 1, // 安全持仓上限（小时）
+  funding_exit_confirm_hours: 0, // 费差需连续低于出场线的确认小时数（0=不确认，立即出）
+  funding_min_hold_hours: 0, // 最小持有小时数（避免刚开就被平）
   maker_close_wait_ticks: 1, // 至少等 1 个 tick 再回退 taker
   maker_open_wait_ticks: 1, // 至少等 1 个 tick 再撤单放弃
   max_concurrent_tasks: 1, // 至少允许 1 个仓位

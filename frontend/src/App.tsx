@@ -512,6 +512,8 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
       { key: 'funding_symbols', label: '只做这些币种（逗号分隔，如 BTC,ETH,SOL；留空=任意可配对）', placeholder: 'BTC,ETH,SOL' },
       { key: 'funding_max_positions', label: '资金费仓位上限（同时最多持有）', type: 'num' },
       { key: 'funding_max_hold_hours', label: '最长持仓小时数（安全上限，到点强制平仓）', type: 'num' },
+      { key: 'funding_min_hold_hours', label: '最短持仓小时数（开仓后至少持有，避免被噪声秒平）', type: 'num' },
+      { key: 'funding_exit_confirm_hours', label: '出场确认时长（费差需持续低于阈值这么久才平，去抖动）', type: 'num' },
     ],
   },
   {
@@ -714,6 +716,9 @@ function AccountOverview() {
   const equity = Number(d.total_equity_usd) || 0
   const tradePnl = Number(d.total_trading_pnl_usd) || 0
   const combined = fundingTotal == null ? null : tradePnl + fundingTotal
+  const eqs = d.equity_summary || null
+  const netStart = eqs && eqs.net_since_start_usd != null ? Number(eqs.net_since_start_usd) : null
+  const net24 = eqs && eqs.net_24h_usd != null ? Number(eqs.net_24h_usd) : null
 
   const venues = [
     { key: 'lighter' as const, name: 'Lighter', v: d.lighter },
@@ -725,6 +730,31 @@ function AccountOverview() {
       title="真实盈亏总览（账户实时）"
       subtitle={`两所账户余额 + 当前持仓交易盈亏（未实现+已实现）+ 资金费累计 = 真实综合盈亏。每 15 秒刷新。${d.dry_run ? ' · 边车 DRY_RUN' : ''}`}
     >
+      <div className="mb-4 rounded-lg border border-[#e6e6e6] bg-[#fafafa] p-3">
+        <div className="text-[12px] font-medium text-[#666] mb-2">
+          真实净盈亏（账户余额变化 · 唯一不说谎的数字）
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <MiniStat
+            label="开机以来净盈亏"
+            value={netStart == null ? '等待基线…' : money(netStart)}
+            tone={netStart == null ? undefined : netStart >= 0 ? 'green' : 'red'}
+          />
+          <MiniStat
+            label="近 24 小时净盈亏"
+            value={net24 == null ? '不足 24 小时' : money(net24)}
+            tone={net24 == null ? undefined : net24 >= 0 ? 'green' : 'red'}
+          />
+          <MiniStat
+            label="基线权益"
+            value={eqs && eqs.baseline_equity != null ? bal(Number(eqs.baseline_equity)) : '—'}
+          />
+        </div>
+        <div className="mt-2 text-[11px] text-[#999] leading-relaxed">
+          此处直接对比两所「账户总权益」的首次快照与当前快照，差额即真实净盈亏（含交易价差、滑点、资金费、一切）。
+          面板上方「交易盈亏」在仓位完全平掉后会归零、看起来常绿，但余额变化不会——以此列为准。
+        </div>
+      </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <MiniStat label="账户总权益（两所）" value={bal(equity)} />
         <MiniStat label="交易盈亏（未实现+已实现）" value={money(tradePnl)} tone={tradePnl >= 0 ? 'green' : 'red'} />
@@ -1110,9 +1140,12 @@ function Settings() {
     funding_symbols: 'CRCL,COIN,CRWV,BE,TSLA,AMD,AAPL,AMZN,MSFT,INTC,MU,PLTR',
     funding_enter_bps_hr: 10, // 只在费差 ≥ 10bps/时才高亮/可开
     funding_exit_bps_hr: 2, // 费差收敛到 2 以内且已覆盖成本才平
+    funding_min_hold_hours: 2, // 开仓后至少持 2 小时，避免被噪声秒平
+    funding_exit_confirm_hours: 2, // 费差需持续低于阈值 2 小时才平，去抖动
     funding_max_positions: 2, // 验证期最多同时 2 仓
     funding_max_hold_hours: 48, // 周末持仓上限，避免拖到周一开盘 gap
     funding_auto_execute: false, // 关键：保持手动，先验证再谈自动
+    maker_open: true, // 先挂后对冲：买腿被动挂单成交后再 taker 对冲，避免单腿裸奔
     order_notional_usd: 20, // 小额试水
   }
   const loadFundingPreset = () => {

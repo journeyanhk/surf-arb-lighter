@@ -52,9 +52,9 @@ exports.settings = pgTable('arb_settings', {
   // IOC when unwinding a hedged position. Falls back to taker after the wait window.
   maker_close: boolean('maker_close').notNull().default(false),
   maker_close_wait_ticks: integer('maker_close_wait_ticks').notNull().default(20),
-  // Maker open: rest a passive post-only quote on the buy leg (0 fee), taker-hedge
+  // ---- Maker open: rest a passive post-only quote on the buy leg (0 fee), taker-hedge
   // the sell leg on fill. Cuts open cost from 2 taker legs to 1.
-  maker_open: boolean('maker_open').notNull().default(false),
+  maker_open: boolean('maker_open').notNull().default(true),
   maker_open_wait_ticks: integer('maker_open_wait_ticks').notNull().default(20),
   exit_spread_bps: doublePrecision('exit_spread_bps').notNull().default(1),
   max_hold_ticks: integer('max_hold_ticks').notNull().default(20),
@@ -69,6 +69,14 @@ exports.settings = pgTable('arb_settings', {
   funding_symbols: text('funding_symbols').notNull().default(''), // whitelist, e.g. "BTC,ETH,SOL"; empty = any paired
   funding_max_positions: integer('funding_max_positions').notNull().default(1),
   funding_max_hold_hours: doublePrecision('funding_max_hold_hours').notNull().default(72), // safety cap
+  // Exit de-noising: the instantaneous per-hour funding differential is very
+  // jumpy (both venues' predicted rates oscillate each update). Don't exit on a
+  // single reading — require the carry to stay ≤ exit threshold continuously for
+  // this many HOURS before actually closing (hysteresis confirm). And never exit
+  // (barring the hard max-hold safety) before a minimum hold, so a position has
+  // time to collect enough funding to beat its round-trip cost.
+  funding_exit_confirm_hours: doublePrecision('funding_exit_confirm_hours').notNull().default(2),
+  funding_min_hold_hours: doublePrecision('funding_min_hold_hours').notNull().default(2),
 
   // Start-simple controls: trade only one market, hold at most N positions at once.
   focus_symbol: text('focus_symbol').notNull().default(''),
@@ -150,6 +158,10 @@ exports.tasks = pgTable('arb_tasks', {
   // ---- Strategy tag + funding-carry fields ----
   strategy: text('strategy').notNull().default('spread'), // 'spread' | 'funding'
   entry_funding_bps_hr: doublePrecision('entry_funding_bps_hr'), // hourly carry captured at open (funding tasks)
+  // Timestamp when the live carry first dropped ≤ exit threshold. Cleared the
+  // moment carry recovers above it. Exit only fires once this has persisted for
+  // funding_exit_confirm_hours — de-noises the jumpy hourly differential.
+  soft_exit_since: timestamp('soft_exit_since'),
 
 
   created_at: timestamp('created_at').defaultNow(),
@@ -179,3 +191,19 @@ exports.funding_ledger = pgTable(
     uniq: uniqueIndex('arb_funding_ledger_task_hour').on(t.task_id, t.settled_hour),
   })
 )
+
+// Periodic snapshots of BOTH venues' account equity (total_asset_value), written
+// by the background runner from the sidecar. The delta between the earliest and
+// the latest snapshot is the TRUE net P&L (trading + funding + everything), which
+// is exactly what the account balance reflects — so the dashboard can finally
+// show "why the balance moves" instead of only open-position PnL that resets on
+// close. No deposits/withdrawals are assumed during operation.
+exports.equity_snapshots = pgTable('arb_equity_snapshots', {
+  id: serial('id').primaryKey(),
+  at: timestamp('at').defaultNow(),
+  lighter_equity: doublePrecision('lighter_equity'),
+  rblighter_equity: doublePrecision('rblighter_equity'),
+  total_equity: doublePrecision('total_equity').notNull(),
+  lighter_available: doublePrecision('lighter_available'),
+  rblighter_available: doublePrecision('rblighter_available'),
+})

@@ -8,6 +8,7 @@
 // snapshot, so one call powers both the balance card and the P&L combination.
 const { Router } = require('express')
 const sidecar = require('../lib/sidecar')
+const { getEquitySummary } = require('../lib/equity')
 
 const router = Router()
 
@@ -45,6 +46,14 @@ router.get('/', async (_req, res) => {
       (lighter.ok ? lighter.total_asset_value : 0) + (rblighter.ok ? rblighter.total_asset_value : 0)
     const tradingPnl =
       (lighter.ok ? lighter.trading_pnl : 0) + (rblighter.ok ? rblighter.trading_pnl : 0)
+    // Ground-truth balance movement (the number that never lies). Best-effort:
+    // null until the first snapshot lands (~30s after boot).
+    let equitySummary = null
+    try {
+      equitySummary = await getEquitySummary()
+    } catch (_) {
+      /* non-fatal: panel just omits the balance-delta card */
+    }
     res.json({
       configured: true,
       ok: true,
@@ -53,6 +62,7 @@ router.get('/', async (_req, res) => {
       rblighter,
       total_equity_usd: equity,
       total_trading_pnl_usd: tradingPnl,
+      equity_summary: equitySummary,
       updated_at: new Date().toISOString(),
     })
   } catch (e) {

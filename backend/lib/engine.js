@@ -621,9 +621,14 @@ async function holding(t, row, s, set) {
   }
 }
 
-// Funding-carry HOLDING: we WANT to hold and collect funding. Exit only when the
-// edge is gone — current hourly carry (short_venue rate − long_venue rate) drops
-// to/below the exit threshold (or reverses), OR a safety max-hold time is hit.
+// Funding-carry HOLDING: we WANT to hold and collect funding. The instantaneous
+// hourly carry is NOISY (both venues' predicted rates jump each update), so we do
+// NOT exit on a single reading. Instead we track soft_exit_since — the moment the
+// live carry first fell ≤ exit threshold — and only exit once it has STAYED there
+// continuously for funding_exit_confirm_hours (hysteresis). We also never exit
+// before funding_min_hold_hours (barring the hard max-hold safety), so a position
+// has time to earn enough funding to beat its round-trip cost. Any recovery of the
+// carry back above the exit line resets the confirm timer.
 async function holdingFunding(t, s, set) {
   const ticks = t.hold_ticks + 1
   let carry = null
@@ -636,49 +641,69 @@ async function holdingFunding(t, s, set) {
   const hoursHeld = t.created_at ? (Date.now() - Date.parse(t.created_at)) / 3.6e6 : 0
   const maxHours = Number(s.funding_max_hold_hours) || 72
   const exitThresh = Number(s.funding_exit_bps_hr) || 0
-  // Display-only accrued estimate: conservative midpoint of entry carry & exit
-  // threshold applied over the holding time. Real funding is settled on-venue.
+  const confirmHours = Math.max(0, Number(s.funding_exit_confirm_hours) || 0)
+  const minHold = Math.max(0, Number(s.funding_min_hold_hours) || 0)
   const avgCarry = Math.max(0, ((Number(t.entry_funding_bps_hr) || 0) + exitThresh) / 2)
   const notional = (Number(t.matched_size) || 0) * (Number(t.buy_price) || 0)
-  // Persist the real hourly funding settlement into the ledger (one row per
-  // top-of-hour boundary crossed while held) so we can show a true accumulated
-  // tally instead of only the midpoint estimate. Uses the SAME live net carry
-  // the panel shows. No-op when carry couldn't be read this tick.
   try {
     await recordFundingSettlement(t, carry, notional)
   } catch (_) {
     /* ledger write is best-effort; never block the hold loop */
   }
   const accrued = (notional * avgCarry * hoursHeld) / 10000
-  // Round-trip taker fee (open both legs + close both legs), mirroring
-  // realizedFundingPnl so the break-even guard uses the SAME cost model.
   const takerFee = Number(s.taker_fee_bps) || 0
   const roundTripFee = (notional * (takerFee * (s.maker_open ? 1 : 2) + takerFee * 2)) / 10000
   const feesCovered = accrued >= roundTripFee
-  const collapsed = carry != null && carry <= exitThresh
-  const reversed = carry != null && carry < 0 // now PAYING funding — bleed, cut it
-  const timeout = hoursHeld >= maxHours
-  // Break-even protected exit:
-  //  1. reversed → stop-loss immediately (holding longer only loses more).
-  //  2. collapsed AND accrued funding already covers the round-trip fee → lock in.
-  //  3. timeout → hard safety cap regardless of PnL.
-  // If the edge collapsed but fees aren't covered yet, KEEP HOLDING (as long as
-  // carry is still ≥ 0 we keep accruing toward break-even) so we never realize a
-  // fee-driven loss on a quiet market.
-  if (reversed || (collapsed && feesCovered) || timeout) {
-    const reason = reversed
-      ? `费差反转至 ${fmt2(carry)} bps/时（已转为倒付资金费），止损平仓`
-      : timeout
-        ? `资金费持仓超时（${hoursHeld.toFixed(1)}h ≥ ${maxHours}h），平仓退出`
-        : `费差收敛至 ${fmt2(carry)} bps/时且累计资金费已覆盖手续费，落袋平仓`
-    await set(`state='EXITING', hold_ticks=$1, note=$2`, [ticks, reason])
-  } else {
-    const note =
-      collapsed && !feesCovered
-        ? `费差已收敛(${carry == null ? '读取中' : fmt2(carry) + ' bps/时'})但累计资金费 ${accrued.toFixed(3)} 未覆盖手续费 ${roundTripFee.toFixed(3)}，继续持有等回本（已持 ${hoursHeld.toFixed(1)}h）`
-        : `资金费对冲持仓中：当前费差 ${carry == null ? '读取中' : fmt2(carry) + ' bps/时'}，已持 ${hoursHeld.toFixed(1)}h，预估累计 ${accrued >= 0 ? '+' : ''}${accrued.toFixed(3)} USD`
-    await set(`hold_ticks=$1, note=$2`, [ticks, note])
+
+  // ---- confirm-timer bookkeeping (only when we actually have a fresh reading) ----
+  const belowExit = carry != null && carry <= exitThresh
+  let softSince = t.soft_exit_since ? Date.parse(t.soft_exit_since) : null
+  let softField = '' // extra SQL fragment to persist a change to soft_exit_since
+  let softParam = null
+  if (carry != null) {
+    if (belowExit && softSince == null) {
+      softSince = Date.now()
+      softField = ', soft_exit_since=now()'
+    } else if (!belowExit && softSince != null) {
+      softSince = null
+      softField = ', soft_exit_since=NULL'
+    }
   }
+  const confirmedHrs = softSince != null ? (Date.now() - softSince) / 3.6e6 : 0
+  const confirmed = softSince != null && confirmedHrs >= confirmHours
+
+  const timeout = hoursHeld >= maxHours
+  const beforeMinHold = hoursHeld < minHold
+  // Confirmed edge-collapse: carry has stayed ≤ exit line for the confirm window
+  // AND accrued funding already covers the round-trip fee → lock in the profit.
+  const confirmedCollapse = belowExit && confirmed && feesCovered
+  // Confirmed reversal: now PAYING funding, and it has persisted below the line
+  // for the confirm window → stop-loss (holding longer only bleeds more).
+  const confirmedReversal = carry != null && carry < 0 && confirmed
+
+  const doExit = timeout || (!beforeMinHold && (confirmedCollapse || confirmedReversal))
+
+  if (doExit) {
+    const reason = timeout
+      ? `资金费持仓超时（${hoursHeld.toFixed(1)}h ≥ ${maxHours}h），平仓退出`
+      : confirmedReversal
+        ? `费差已连续 ${confirmedHrs.toFixed(1)}h 转为倒付（当前 ${fmt2(carry)} bps/时），确认后止损平仓`
+        : `费差已连续 ${confirmedHrs.toFixed(1)}h ≤ 出场线且累计资金费覆盖手续费，落袋平仓`
+    await set(`state='EXITING', hold_ticks=$1, note=$2${softField}`, [ticks, reason])
+    return
+  }
+
+  // Not exiting — persist any soft-timer change and a human-readable status note.
+  const carryTxt = carry == null ? '读取中' : fmt2(carry) + ' bps/时'
+  let note
+  if (beforeMinHold) {
+    note = `资金费持仓中（最小持有 ${minHold}h 保护内，已持 ${hoursHeld.toFixed(1)}h）：当前费差 ${carryTxt}，预估累计 ${accrued >= 0 ? '+' : ''}${accrued.toFixed(3)} USD`
+  } else if (belowExit) {
+    note = `费差已收敛(${carryTxt})，确认计时 ${confirmedHrs.toFixed(1)}/${confirmHours}h${feesCovered ? '' : `，累计资金费 ${accrued.toFixed(3)} 未覆盖手续费 ${roundTripFee.toFixed(3)}`}（已持 ${hoursHeld.toFixed(1)}h）`
+  } else {
+    note = `资金费对冲持仓中：当前费差 ${carryTxt}，已持 ${hoursHeld.toFixed(1)}h，预估累计 ${accrued >= 0 ? '+' : ''}${accrued.toFixed(3)} USD`
+  }
+  await set(`hold_ticks=$1, note=$2${softField}`, [ticks, note])
 }
 
 function fmt2(n) {

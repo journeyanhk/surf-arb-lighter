@@ -7,6 +7,7 @@ const { loadSettings } = require('../routes/settings')
 const { listOrderBooks, topOfBook, computeSpread } = require('./exchange')
 const { stepEngine } = require('./engine')
 const { runMaintenance, isStackDepthError } = require('./maintenance')
+const { recordEquitySnapshot } = require('./equity')
 
 const SCAN_INTERVAL_MS = 8000
 const SCAN_LIMIT = 24 // fallback bounds if settings unavailable
@@ -298,12 +299,21 @@ function start() {
   const maintFirst = setTimeout(() => runMaintenance(true).catch(() => {}), 90_000)
   const maintTimer = setInterval(() => runMaintenance().catch(() => {}), 5 * 60_000)
 
+  // Equity snapshots: the ground-truth "balance movement" tracker. First pass
+  // 30s after boot (baseline), then every 10min. Best-effort + sidecar-guarded
+  // (recordEquitySnapshot returns {ok:false} when the sidecar isn't configured
+  // or a venue is unreadable — it never throws into this timer).
+  const equityFirst = setTimeout(() => recordEquitySnapshot().catch(() => {}), 30_000)
+  const equityTimer = setInterval(() => recordEquitySnapshot().catch(() => {}), 10 * 60_000)
+
   return () => {
     stopped = true
     if (timer) clearTimeout(timer)
     timer = null
     clearTimeout(maintFirst)
     clearInterval(maintTimer)
+    clearTimeout(equityFirst)
+    clearInterval(equityTimer)
   }
 }
 
