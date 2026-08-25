@@ -140,6 +140,7 @@ const STATEMENTS = [
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_max_hold_hours double precision NOT NULL DEFAULT 72`,
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_exit_confirm_hours double precision NOT NULL DEFAULT 2`,
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS funding_min_hold_hours double precision NOT NULL DEFAULT 2`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS extended_base_url text NOT NULL DEFAULT 'https://api.starknet.extended.exchange'`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS soft_exit_since timestamp`,
 
   `CREATE TABLE IF NOT EXISTS arb_equity_snapshots (

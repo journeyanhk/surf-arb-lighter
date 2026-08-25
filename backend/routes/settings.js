@@ -25,6 +25,7 @@ const DEFAULTS = {
   rblighter_account_index: '',
   rblighter_api_key_index: '',
   rblighter_api_private_key: '',
+  extended_base_url: 'https://api.starknet.extended.exchange',
   telegram_bot_token: '',
   telegram_chat_id: '',
   spread_threshold_bps: 5,
@@ -155,7 +156,15 @@ router.put('/', async (req, res) => {
 
 // Internal helper for other routes that need the full (unmasked) config.
 async function loadSettings() {
-  return ensureRow()
+  const row = await ensureRow()
+  // Backfill any column the DB row is missing or left NULL (e.g. a column added
+  // to the schema after this row was first created, like extended_base_url)
+  // from DEFAULTS, so downstream code never sees null base URLs / thresholds.
+  const merged = { ...row }
+  for (const k of Object.keys(DEFAULTS)) {
+    if (merged[k] == null) merged[k] = DEFAULTS[k]
+  }
+  return merged
 }
 
 // Connectivity test: hit both venues (through the saved proxy, if any) and

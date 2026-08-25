@@ -2,6 +2,7 @@ const { Router } = require('express')
 const { dbQuery } = require('../db')
 const { getSnapshot, getHealth, commonMarkets } = require('../lib/runner')
 const { getFundingMap, bestCarry, carryBpsHr } = require('../lib/funding')
+const oppTracker = require('../lib/oppTracker')
 const { openFundingTask } = require('../lib/engine')
 const { loadSettings } = require('./settings')
 
@@ -144,3 +145,24 @@ router.post('/funding/open', async (req, res) => {
 })
 
 module.exports = router
+
+// ---- Cross-venue opportunity monitor (Lighter / RBLighter / Extended / …) ----
+// Serves the background tracker's latest snapshot: every symbol on >= 2 venues,
+// its best funding-carry (short highest-funding venue, long lowest) ranked by
+// APR, plus max price-basis, plus how long the edge has persisted. Read-only.
+router.get('/opportunities', async (_req, res) => {
+  try {
+    let snap = oppTracker.getLatest()
+    if (!snap) {
+      // Cold start (runner hasn't sampled yet): do one inline refresh.
+      const s = await loadSettings()
+      snap = await oppTracker.refresh(s)
+    }
+    if (!snap) {
+      return res.status(503).json({ error: oppTracker.getError() || '监控尚未就绪，请稍候' })
+    }
+    res.json(snap)
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) })
+  }
+})

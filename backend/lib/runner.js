@@ -8,6 +8,7 @@ const { listOrderBooks, topOfBook, computeSpread } = require('./exchange')
 const { stepEngine } = require('./engine')
 const { runMaintenance, isStackDepthError } = require('./maintenance')
 const { recordEquitySnapshot } = require('./equity')
+const oppTracker = require('./oppTracker')
 
 const SCAN_INTERVAL_MS = 8000
 const SCAN_LIMIT = 24 // fallback bounds if settings unavailable
@@ -306,6 +307,21 @@ function start() {
   const equityFirst = setTimeout(() => recordEquitySnapshot().catch(() => {}), 30_000)
   const equityTimer = setInterval(() => recordEquitySnapshot().catch(() => {}), 10 * 60_000)
 
+  // Cross-venue opportunity tracker: refresh every 45s on a steady clock so the
+  // "persistence" timer is measured consistently even with no page open (and so
+  // future alerts fire in the background). Sidecar-independent; only hits public
+  // market-data endpoints. First pass 5s after boot for a fast initial panel.
+  const oppRefresh = async () => {
+    try {
+      const s = await loadSettings()
+      await oppTracker.refresh(s)
+    } catch (_) {
+      /* tracker keeps last-good snapshot on failure */
+    }
+  }
+  const oppFirst = setTimeout(oppRefresh, 5_000)
+  const oppTimer = setInterval(oppRefresh, 45_000)
+
   return () => {
     stopped = true
     if (timer) clearTimeout(timer)
@@ -314,6 +330,8 @@ function start() {
     clearInterval(maintTimer)
     clearTimeout(equityFirst)
     clearInterval(equityTimer)
+    clearTimeout(oppFirst)
+    clearInterval(oppTimer)
   }
 }
 

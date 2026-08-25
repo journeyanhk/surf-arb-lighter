@@ -35,6 +35,11 @@ exports.settings = pgTable('arb_settings', {
   rblighter_api_private_key: text('rblighter_api_private_key').default(''),
   // NOTE: referral verification service intentionally removed from this build.
 
+  // ---- Extended (extended.exchange / StarkEx perp DEX) — monitor-only ----
+  // One call to /api/v1/info/markets returns funding + bid/ask + mark for every
+  // market, so no rate-limit concerns. Read-only in the monitor (no trading).
+  extended_base_url: text('extended_base_url').notNull().default('https://api.starknet.extended.exchange'),
+
   // ---- Optional notifications ----
   telegram_bot_token: text('telegram_bot_token').default(''),
   telegram_chat_id: text('telegram_chat_id').default(''),

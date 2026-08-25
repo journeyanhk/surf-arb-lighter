@@ -4,7 +4,7 @@ import { api } from './lib/api'
 
 const qc = new QueryClient()
 
-type Tab = 'dashboard' | 'funding' | 'settings'
+type Tab = 'monitor' | 'dashboard' | 'funding' | 'settings'
 
 export default function App() {
   return (
@@ -87,17 +87,18 @@ function Login({ onDone }: { onDone: () => void }) {
 }
 
 function Shell() {
-  const [tab, setTab] = useState<Tab>('dashboard')
+  const [tab, setTab] = useState<Tab>('monitor')
   return (
     <div className="min-h-screen bg-[#fafafa] text-[#111]">
       <header className="border-b border-[#e5e5e5] bg-white">
         <div className="mx-auto max-w-6xl px-6 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-[15px] font-semibold tracking-tight">RBLighter ↔ Lighter 价差套利</h1>
-            <p className="text-[12px] text-[#888]">Cross-venue orderbook spread monitor</p>
+            <h1 className="text-[15px] font-semibold tracking-tight">跨所套利机会监控</h1>
+            <p className="text-[12px] text-[#888]">Lighter · RBLighter · Extended — 资金费差 &amp; 价差全网扫描</p>
           </div>
           <nav className="flex gap-1 text-[13px]">
-            <TabBtn active={tab === 'dashboard'} onClick={() => setTab('dashboard')}>监控面板</TabBtn>
+            <TabBtn active={tab === 'monitor'} onClick={() => setTab('monitor')}>跨所监控</TabBtn>
+            <TabBtn active={tab === 'dashboard'} onClick={() => setTab('dashboard')}>执行面板</TabBtn>
             <TabBtn active={tab === 'funding'} onClick={() => setTab('funding')}>资金费</TabBtn>
             <TabBtn active={tab === 'settings'} onClick={() => setTab('settings')}>设置</TabBtn>
             <LogoutBtn />
@@ -105,7 +106,7 @@ function Shell() {
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-6 py-6">
-        {tab === 'dashboard' ? <Dashboard /> : tab === 'funding' ? <Funding /> : <Settings />}
+        {tab === 'monitor' ? <CrossVenueMonitor /> : tab === 'dashboard' ? <Dashboard /> : tab === 'funding' ? <Funding /> : <Settings />}
       </main>
     </div>
   )
@@ -146,6 +147,159 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 }
 
 /* ---------------- Dashboard ---------------- */
+
+/* ---------------- Cross-venue opportunity monitor (main view) ---------------- */
+
+type OppVenue = { id: string; name: string; funding_bps_hr: number | null; mark: number | null; bid: number | null; ask: number | null }
+type OppRow = {
+  symbol: string
+  venue_count: number
+  funding: null | {
+    short_venue: string; long_venue: string
+    short_funding_bps_hr: number; long_funding_bps_hr: number
+    diff_bps_hr: number; daily_pct: number; apr_pct: number
+  }
+  basis: null | { buy_venue: string; sell_venue: string; buy_price: number; sell_price: number; spread_bps: number }
+  venues: OppVenue[]
+  persistence_min?: number
+  score_apr: number
+}
+
+function CrossVenueMonitor() {
+  const { data, isLoading, error, dataUpdatedAt } = useQuery({
+    queryKey: ['opportunities'],
+    queryFn: () => fetch(api('monitor/opportunities')).then((r) => r.json()),
+    refetchInterval: 15000,
+  })
+
+  // Filters (client-side, instant)
+  const [minApr, setMinApr] = useState(50) // %
+  const [minPersist, setMinPersist] = useState(0) // minutes
+  const [minVenues, setMinVenues] = useState(2)
+  const [venueFilter, setVenueFilter] = useState<Record<string, boolean>>({ lighter: true, rblighter: true, extended: true })
+  const [symbolQuery, setSymbolQuery] = useState('')
+
+  const rows: OppRow[] = data?.rows || []
+  const venues: { id: string; name: string; ok: boolean; count: number; error?: string }[] = data?.venues || []
+  const venueErrors: string[] = data?.errors || []
+
+  const fmtPct = (n: number) => `${n >= 0 ? '' : ''}${(Number(n) || 0).toFixed(n >= 100 ? 0 : 1)}%`
+  const fmtBps = (n: number | null) => (n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(3)}`)
+
+  const activeVenueIds = Object.entries(venueFilter).filter(([, on]) => on).map(([k]) => k)
+  const q = symbolQuery.trim().toUpperCase()
+  const filtered = rows.filter((r) => {
+    if (!r.funding) return false
+    if ((r.funding.apr_pct || 0) < minApr) return false
+    if ((r.persistence_min || 0) < minPersist) return false
+    if (r.venue_count < minVenues) return false
+    if (q && !r.symbol.includes(q)) return false
+    // both legs of the funding trade must be on venues the user kept enabled
+    const legIds = r.venues.map((v) => v.id)
+    if (!legIds.some((id) => activeVenueIds.includes(id))) return false
+    return true
+  })
+
+  const aprTone = (apr: number) => (apr >= 300 ? 'text-emerald-600 font-semibold' : apr >= 100 ? 'text-emerald-600' : 'text-[#111]')
+  const persistTone = (m: number) => (m >= 30 ? 'green' : m >= 10 ? 'light' : 'gray') as 'green' | 'light' | 'gray'
+
+  if (error) return <ErrorBox msg={String((error as any)?.message || error)} />
+
+  return (
+    <div className="space-y-5">
+      <Card
+        title="全网最优资金费差机会"
+        subtitle="每个币在所有交易所里，做空费率最高的一边、做多最低的一边，按年化 APR 排序。持续时长越长越可靠。每 15 秒刷新。"
+      >
+        {/* venue status strip */}
+        <div className="flex flex-wrap items-center gap-2 mb-4 text-[12px]">
+          {venues.map((v) => (
+            <span key={v.id} className={`inline-flex items-center gap-1 px-2 py-1 rounded border ${v.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-600'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${v.ok ? 'bg-emerald-500' : 'bg-red-500'}`} />
+              {v.name} {v.ok ? `· ${v.count}` : '· 异常'}
+            </span>
+          ))}
+          {venueErrors.length ? <span className="text-amber-600 truncate max-w-[360px]" title={venueErrors.join(' | ')}>{venueErrors.join(' · ')}</span> : null}
+          <span className="text-[#bbb] ml-auto">更新于 {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : '—'}</span>
+        </div>
+
+        {/* filters */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+          <FilterNum label="最小年化 APR %" value={minApr} onChange={setMinApr} step={10} />
+          <FilterNum label="最小持续(分钟)" value={minPersist} onChange={setMinPersist} step={5} />
+          <FilterNum label="最少上架所数" value={minVenues} onChange={setMinVenues} step={1} min={2} />
+          <div className="bg-[#fafafa] border border-[#eee] rounded-md px-3 py-2">
+            <div className="text-[11px] text-[#999] mb-1">币种搜索</div>
+            <input value={symbolQuery} onChange={(e) => setSymbolQuery(e.target.value)} placeholder="如 BTC" className="w-full text-[13px] bg-transparent outline-none" />
+          </div>
+          <div className="bg-[#fafafa] border border-[#eee] rounded-md px-3 py-2">
+            <div className="text-[11px] text-[#999] mb-1">交易所</div>
+            <div className="flex flex-wrap gap-1.5 text-[11px]">
+              {venues.map((v) => (
+                <button key={v.id} onClick={() => setVenueFilter((f) => ({ ...f, [v.id]: !f[v.id] }))}
+                  className={`px-1.5 py-0.5 rounded border ${venueFilter[v.id] ? 'border-[#111] bg-[#111] text-white' : 'border-[#ddd] text-[#999]'}`}>
+                  {v.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {isLoading && !rows.length ? (
+          <Loading label="正在扫描各交易所…" />
+        ) : (
+          <>
+            <div className="mb-3 text-[12px] text-[#999]">符合条件 <span className="text-[#111] font-medium">{filtered.length}</span> 个 / 全网 {rows.length} 个可配对</div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[13px]">
+                <thead>
+                  <tr className="text-left text-[#999] border-b border-[#eee]">
+                    <Th>币种</Th><Th right>年化 APR</Th><Th right>费差/时</Th><Th>做空(高费率)</Th><Th>做多(低费率)</Th><Th right>持续</Th><Th right>价差</Th><Th>上架所</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((r) => (
+                    <tr key={r.symbol} className="border-b border-[#f3f3f3] hover:bg-[#fafafa]">
+                      <Td className="font-medium">{r.symbol}</Td>
+                      <Td right mono className={aprTone(r.funding!.apr_pct)}>{fmtPct(r.funding!.apr_pct)}</Td>
+                      <Td right mono>{r.funding!.diff_bps_hr.toFixed(3)}</Td>
+                      <Td><span className="text-red-600">{r.funding!.short_venue}</span> <span className="text-[#bbb]">{fmtBps(r.funding!.short_funding_bps_hr)}</span></Td>
+                      <Td><span className="text-emerald-600">{r.funding!.long_venue}</span> <span className="text-[#bbb]">{fmtBps(r.funding!.long_funding_bps_hr)}</span></Td>
+                      <Td right>{r.persistence_min ? <Badge tone={persistTone(r.persistence_min)}>{r.persistence_min}分</Badge> : <span className="text-[#ccc]">新</span>}</Td>
+                      <Td right mono className={r.basis ? 'text-[#666]' : 'text-[#ccc]'}>{r.basis ? `${r.basis.spread_bps.toFixed(1)}bps` : '—'}</Td>
+                      <Td><span className="text-[11px] text-[#999]">{r.venues.map((v) => v.name).join(' · ')}</span></Td>
+                    </tr>
+                  ))}
+                  {!filtered.length ? (
+                    <tr><td colSpan={8} className="py-8 text-center text-[#bbb] text-[13px]">没有符合当前过滤条件的机会，试试降低最小 APR 或持续时长</td></tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-3 text-[12px] text-[#999] leading-relaxed">
+              说明：①「年化 APR」= 费差(每小时 bps) × 24 × 365，仅供横向比较，实际收益取决于持仓时长与费率稳定性；
+              ②「持续」= 该费差连续维持在开仓阈值以上的时间，绿色(≥30分)更可靠、灰色(刚出现)多为噪声，别追；
+              ③「价差」为两所标记价之差（bps），仅作参考，非可成交价；④极高 APR（数千%）多为小盘瞬时抽风，看「持续」列辨别真伪。
+            </div>
+          </>
+        )}
+      </Card>
+    </div>
+  )
+}
+
+function FilterNum({ label, value, onChange, step = 1, min = 0 }: { label: string; value: number; onChange: (n: number) => void; step?: number; min?: number }) {
+  return (
+    <div className="bg-[#fafafa] border border-[#eee] rounded-md px-3 py-2">
+      <div className="text-[11px] text-[#999] mb-1">{label}</div>
+      <div className="flex items-center gap-1">
+        <button onClick={() => onChange(Math.max(min, value - step))} className="w-5 h-5 rounded border border-[#ddd] text-[#666] leading-none">−</button>
+        <input type="number" value={value} onChange={(e) => onChange(Math.max(min, Number(e.target.value) || 0))} className="w-full text-[13px] bg-transparent outline-none text-center tabular-nums" />
+        <button onClick={() => onChange(value + step)} className="w-5 h-5 rounded border border-[#ddd] text-[#666] leading-none">+</button>
+      </div>
+    </div>
+  )
+}
 
 function Dashboard() {
   const { data, isLoading, isFetching, error } = useQuery({
