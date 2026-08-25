@@ -143,6 +143,13 @@ const STATEMENTS = [
   `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS extended_base_url text NOT NULL DEFAULT 'https://api.starknet.extended.exchange'`,
   `ALTER TABLE arb_tasks      ADD COLUMN IF NOT EXISTS soft_exit_since timestamp`,
 
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS serverchan_sendkey text DEFAULT ''`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS alert_enabled boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS alert_symbols text NOT NULL DEFAULT 'BTC,ETH,SOL,CRCL,COIN,CRWV,BE,TSLA,AMD,AAPL,AMZN,MSFT,INTC,MU,PLTR'`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS alert_min_apr double precision NOT NULL DEFAULT 300`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS alert_min_persist_min double precision NOT NULL DEFAULT 30`,
+  `ALTER TABLE arb_settings   ADD COLUMN IF NOT EXISTS alert_cooldown_min double precision NOT NULL DEFAULT 60`,
+
   `CREATE TABLE IF NOT EXISTS arb_equity_snapshots (
      id serial PRIMARY KEY,
      at timestamp DEFAULT now(),
@@ -151,6 +158,16 @@ const STATEMENTS = [
      total_equity double precision NOT NULL,
      lighter_available double precision,
      rblighter_available double precision
+   )`,
+
+  `CREATE TABLE IF NOT EXISTS arb_alert_log (
+     id serial PRIMARY KEY,
+     at timestamp DEFAULT now(),
+     akey text NOT NULL,
+     symbol text,
+     apr_pct double precision,
+     diff_bps_hr double precision,
+     persistence_min double precision
    )`,
 
 

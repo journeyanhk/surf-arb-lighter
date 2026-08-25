@@ -183,6 +183,21 @@ function CrossVenueMonitor() {
   const venues: { id: string; name: string; ok: boolean; count: number; error?: string }[] = data?.venues || []
   const venueErrors: string[] = data?.errors || []
 
+  const [alertMsg, setAlertMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [alertBusy, setAlertBusy] = useState(false)
+  const sendTest = async () => {
+    setAlertBusy(true)
+    setAlertMsg(null)
+    try {
+      const r = await fetch(api('monitor/alert-test'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then((x) => x.json())
+      setAlertMsg(r.ok ? { ok: true, text: '测试推送已发送，请查看微信' } : { ok: false, text: r.error || '发送失败' })
+    } catch (e: any) {
+      setAlertMsg({ ok: false, text: String(e?.message || e) })
+    } finally {
+      setAlertBusy(false)
+    }
+  }
+
   const fmtPct = (n: number) => `${n >= 0 ? '' : ''}${(Number(n) || 0).toFixed(n >= 100 ? 0 : 1)}%`
   const fmtBps = (n: number | null) => (n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(3)}`)
 
@@ -220,7 +235,13 @@ function CrossVenueMonitor() {
             </span>
           ))}
           {venueErrors.length ? <span className="text-amber-600 truncate max-w-[360px]" title={venueErrors.join(' | ')}>{venueErrors.join(' · ')}</span> : null}
-          <span className="text-[#bbb] ml-auto">更新于 {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : '—'}</span>
+          <span className="ml-auto flex items-center gap-2">
+            <button onClick={sendTest} disabled={alertBusy} className="px-2 py-1 rounded border border-[#ddd] text-[#555] hover:bg-[#f5f5f5] disabled:opacity-50">
+              {alertBusy ? '发送中…' : '发送测试推送'}
+            </button>
+            {alertMsg ? <span className={alertMsg.ok ? 'text-emerald-600' : 'text-red-500'}>{alertMsg.text}</span> : null}
+            <span className="text-[#bbb]">更新于 {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : '—'}</span>
+          </span>
         </div>
 
         {/* filters */}
@@ -675,6 +696,18 @@ const FIELD_GROUPS: { title: string; note?: string; fields: { key: string; label
     note: '所有交易所接口将通过此代理访问。支持 http/https/socks5，可包含账号密码。留空则直连。',
     fields: [
       { key: 'proxy_url', label: '代理地址', placeholder: 'http://user:pass@host:port 或 socks5://host:1080（留空直连）' },
+    ],
+  },
+  {
+    title: '告警推送（Server酱）',
+    note: '只需填入 Server酱 SendKey（appKey）。当关注币种的资金费差年化 APR 与持续时长同时达标时，自动推送到你的微信。持续时长是关键——避免被瞬时噪声打扰。',
+    fields: [
+      { key: 'serverchan_sendkey', label: 'Server酱 SendKey（appKey）', secret: true, placeholder: '留空则不修改，形如 SCT... 或 sctp...' },
+      { key: 'alert_enabled', label: '启用告警推送', type: 'bool' },
+      { key: 'alert_symbols', label: '只提醒这些币种（逗号分隔）', placeholder: 'BTC,ETH,SOL,CRCL,COIN...' },
+      { key: 'alert_min_apr', label: '最小年化 APR %（达到才推送）', type: 'num' },
+      { key: 'alert_min_persist_min', label: '最小持续分钟（费差稳定这么久才推送，去噪）', type: 'num' },
+      { key: 'alert_cooldown_min', label: '同机会冷却分钟（避免重复轰炸）', type: 'num' },
     ],
   },
   {

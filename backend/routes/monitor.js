@@ -3,6 +3,7 @@ const { dbQuery } = require('../db')
 const { getSnapshot, getHealth, commonMarkets } = require('../lib/runner')
 const { getFundingMap, bestCarry, carryBpsHr } = require('../lib/funding')
 const oppTracker = require('../lib/oppTracker')
+const { sendServerChan } = require('../lib/alerts')
 const { openFundingTask } = require('../lib/engine')
 const { loadSettings } = require('./settings')
 
@@ -164,5 +165,23 @@ router.get('/opportunities', async (_req, res) => {
     res.json(snap)
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) })
+  }
+})
+
+// Send a test Server酱 push using the saved SendKey (or one passed in the body),
+// so the user can confirm alerts are wired up before relying on them.
+router.post('/alert-test', async (req, res) => {
+  try {
+    const s = await loadSettings()
+    const key = (req.body && req.body.sendkey) || s.serverchan_sendkey
+    if (!key) return res.status(400).json({ error: '未填写 Server酱 SendKey，请先在设置里保存' })
+    const r = await sendServerChan(
+      key,
+      '✅ 跨所监控告警测试',
+      '这是一条测试推送。如果你收到了它，说明 Server酱告警已接通。\n\n> 之后当有币种的资金费差年化与持续时长同时达标时，你会自动收到通知。'
+    )
+    res.json({ ok: true, ...r })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) })
   }
 })

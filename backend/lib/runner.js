@@ -9,6 +9,7 @@ const { stepEngine } = require('./engine')
 const { runMaintenance, isStackDepthError } = require('./maintenance')
 const { recordEquitySnapshot } = require('./equity')
 const oppTracker = require('./oppTracker')
+const { evaluateAlerts } = require('./alerts')
 
 const SCAN_INTERVAL_MS = 8000
 const SCAN_LIMIT = 24 // fallback bounds if settings unavailable
@@ -314,7 +315,9 @@ function start() {
   const oppRefresh = async () => {
     try {
       const s = await loadSettings()
-      await oppTracker.refresh(s)
+      const snap = await oppTracker.refresh(s)
+      // Fire alerts off the refreshed snapshot (guarded; never throws here).
+      if (snap) await evaluateAlerts(snap, s)
     } catch (_) {
       /* tracker keeps last-good snapshot on failure */
     }

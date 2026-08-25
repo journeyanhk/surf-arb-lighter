@@ -44,6 +44,14 @@ exports.settings = pgTable('arb_settings', {
   telegram_bot_token: text('telegram_bot_token').default(''),
   telegram_chat_id: text('telegram_chat_id').default(''),
 
+  // ---- Alerts (Server酱 / ServerChan Turbo — one SendKey, POST push) ----
+  serverchan_sendkey: text('serverchan_sendkey').default(''),
+  alert_enabled: boolean('alert_enabled').notNull().default(false),
+  alert_symbols: text('alert_symbols').notNull().default('BTC,ETH,SOL,CRCL,COIN,CRWV,BE,TSLA,AMD,AAPL,AMZN,MSFT,INTC,MU,PLTR'),
+  alert_min_apr: doublePrecision('alert_min_apr').notNull().default(300),
+  alert_min_persist_min: doublePrecision('alert_min_persist_min').notNull().default(30),
+  alert_cooldown_min: doublePrecision('alert_cooldown_min').notNull().default(60),
+
   // ---- Strategy parameters ----
   spread_threshold_bps: doublePrecision('spread_threshold_bps').notNull().default(5),
   min_samples: integer('min_samples').notNull().default(30),
@@ -211,4 +219,18 @@ exports.equity_snapshots = pgTable('arb_equity_snapshots', {
   total_equity: doublePrecision('total_equity').notNull(),
   lighter_available: doublePrecision('lighter_available'),
   rblighter_available: doublePrecision('rblighter_available'),
+})
+
+// Alert-dedup log: one row per push we send for a given opportunity key
+// (symbol|short>long). The background alert engine checks the latest row's
+// timestamp against the cooldown so we don't re-notify the same edge every
+// refresh. Survives restarts (in-memory would re-alert on every reboot).
+exports.alert_log = pgTable('arb_alert_log', {
+  id: serial('id').primaryKey(),
+  at: timestamp('at').defaultNow(),
+  akey: text('akey').notNull(),
+  symbol: text('symbol'),
+  apr_pct: doublePrecision('apr_pct'),
+  diff_bps_hr: doublePrecision('diff_bps_hr'),
+  persistence_min: doublePrecision('persistence_min'),
 })

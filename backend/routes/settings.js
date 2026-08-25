@@ -8,6 +8,7 @@ const SECRET_FIELDS = [
   'lighter_api_private_key',
   'rblighter_api_private_key',
   'telegram_bot_token',
+  'serverchan_sendkey',
 ]
 
 const DEFAULTS = {
@@ -28,6 +29,12 @@ const DEFAULTS = {
   extended_base_url: 'https://api.starknet.extended.exchange',
   telegram_bot_token: '',
   telegram_chat_id: '',
+  serverchan_sendkey: '',
+  alert_enabled: false,
+  alert_symbols: 'BTC,ETH,SOL,CRCL,COIN,CRWV,BE,TSLA,AMD,AAPL,AMZN,MSFT,INTC,MU,PLTR',
+  alert_min_apr: 300,
+  alert_min_persist_min: 30,
+  alert_cooldown_min: 60,
   spread_threshold_bps: 5,
   min_samples: 30,
   max_slippage_bps: 3,
@@ -82,6 +89,9 @@ const NUMERIC_MIN = {
   max_concurrent_tasks: 1, // 至少允许 1 个仓位
   scan_interval_sec: 3,
   scan_market_limit: 1,
+  alert_min_apr: 0,
+  alert_min_persist_min: 0,
+  alert_cooldown_min: 1,
 }
 
 async function ensureRow() {
